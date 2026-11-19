@@ -80,6 +80,10 @@ final class Pages {
             m.reloadAll();
         }));
         es.add(new GlassMenu.Entry(m.getString(R.string.add_to_playlist), Icons.PLAYLIST, false, () -> pickPlaylistDialog(m, v)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.sub_web_search), Icons.GLOBE, false, () -> {
+            m.playVideo(v, null);
+            m.root.postDelayed(() -> OnlineSubtitle.showSearchSheet(m, v, false), 320);
+        }));
         if (!v.isStream) {
             es.add(new GlassMenu.Entry(m.getString(R.string.sub_ai_generate), Icons.AI, false, () -> {
                 m.playVideo(v, null);
@@ -129,16 +133,15 @@ final class Pages {
         String[] names = new String[VideoLibrary.playlists.size() + 1];
         for (int i = 0; i < VideoLibrary.playlists.size(); i++) names[i] = VideoLibrary.playlists.get(i).name;
         names[VideoLibrary.playlists.size()] = "+ " + m.getString(R.string.new_playlist);
-        new AlertDialog.Builder(m).setTitle(R.string.add_to_playlist)
-                .setItems(names, (d, which) -> {
-                    if (which == VideoLibrary.playlists.size()) {
-                        createPlaylistDialog(m, pl -> VideoLibrary.addToPlaylist(pl, v));
-                    } else {
-                        VideoLibrary.Playlist pl = VideoLibrary.playlists.get(which);
-                        VideoLibrary.addToPlaylist(pl, v);
-                        Toast.makeText(m, pl.name + "에 추가했습니다", Toast.LENGTH_SHORT).show();
-                    }
-                }).show();
+        Widgets.pickSheet(m, null, m.getString(R.string.add_to_playlist), names, -1, which -> {
+            if (which == VideoLibrary.playlists.size()) {
+                createPlaylistDialog(m, pl -> VideoLibrary.addToPlaylist(pl, v));
+            } else {
+                VideoLibrary.Playlist pl = VideoLibrary.playlists.get(which);
+                VideoLibrary.addToPlaylist(pl, v);
+                Toast.makeText(m, pl.name + "에 추가했습니다", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     interface PlaylistCb { void onCreated(VideoLibrary.Playlist pl); }
@@ -415,15 +418,16 @@ final class Pages {
                 content.addView(Widgets.caption(m, "아직 생성된 AI 자막이 없습니다. 동영상 재생 중 자막 → AI 자막 자동 생성을 눌러보세요."));
                 return;
             }
-            Widgets.Group g = new Widgets.Group(m, "캐시된 AI 자막 (" + files.size() + ")");
+            Widgets.Group g = new Widgets.Group(m, "저장된 자막 (" + files.size() + ")");
             for (File f : files) {
-                g.row(Icons.AI, Ui.ACCENT, f.getName(), Ui.size(f.length()), false, v -> {
+                g.row(Icons.SUBTITLE, Ui.ACCENT, f.getName(), Ui.size(f.length()), false, v -> {
                     Subtitle.Track t = Subtitle.loadFile(f);
                     int count = t == null ? 0 : t.cues.size();
-                    new AlertDialog.Builder(m).setTitle(f.getName())
-                            .setMessage("대사 " + count + "줄 · " + Ui.size(f.length()))
-                            .setNeutralButton("삭제", (d, w) -> { f.delete(); rebuild(); })
-                            .setPositiveButton(R.string.ok, null).show();
+                    List<GlassMenu.Entry> es = new ArrayList<>();
+                    es.add(new GlassMenu.Entry("대사 " + count + "줄 · " + Ui.size(f.length()), Icons.INFO, false, null));
+                    es.add(new GlassMenu.Entry("자막 파일 삭제", Icons.CLOSE, false, () -> { f.delete(); rebuild(); }));
+                    float[] o = Glass.abs(v);
+                    GlassMenu.sheet(m, new RectF(o[0], o[1], o[0] + v.getWidth(), o[1] + v.getHeight()), f.getName(), es, null);
                 });
             }
             content.addView(g, Widgets.MW);

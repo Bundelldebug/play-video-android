@@ -114,8 +114,10 @@ abstract class Page extends FrameLayout {
 
     float titleProgress() {
         int y = scroll.getScrollY();
+        if (y <= Ui.dp(8)) return 0f;
         if (bigTitle == null) return Ui.clamp((y - Ui.dp(140)) / (float) Ui.dp(24), 0f, 1f);
-        float start = bigTitle.getTop() - Ui.statusInset - Ui.dp(40);
+        if (bigTitle.getHeight() <= 0) return 0f;
+        float start = Math.max(Ui.dpf(20), bigTitle.getTop() - Ui.statusInset - Ui.dpf(32));
         return Ui.clamp((y - start) / (float) Ui.dp(18), 0f, 1f);
     }
 

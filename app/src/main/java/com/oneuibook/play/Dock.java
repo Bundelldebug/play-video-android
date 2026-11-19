@@ -231,6 +231,7 @@ final class Dock extends FrameLayout {
         if (hintShimmerAnim != null) hintShimmerAnim.cancel();
         if (on) {
             field.setVisibility(VISIBLE);
+            field.setCursorVisible(true);
             field.requestFocus();
             showIme();
             hintType = 0f;
@@ -255,6 +256,8 @@ final class Dock extends FrameLayout {
             hintShimmerAnim.start();
         } else {
             field.setText("");
+            field.setCursorVisible(false);
+            field.clearFocus();
             hideIme();
             hintType = 0f;
         }
@@ -410,6 +413,9 @@ final class Dock extends FrameLayout {
     }
 
     @Override protected void dispatchDraw(Canvas c) {
+        if (search <= 0.05f && field.getVisibility() == VISIBLE && (searchAnim == null || !searchAnim.isRunning())) {
+            field.setVisibility(GONE);
+        }
         layoutRects();
         int fg = Ui.text(), fg2 = Ui.text2();
 

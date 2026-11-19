@@ -434,20 +434,41 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         return t;
     }
 
+    TextureView videoTexture() { return texture; }
+
     private void adaptLayoutForSize(int w, int h0) {
         if (w <= 0 || h0 <= 0) return;
         boolean narrow = w < Ui.dp(480);
-        int side = narrow ? Ui.dp(12) : Ui.dp(24);
+        boolean landscape = w > h0;
+        int baseSide = narrow ? Ui.dp(12) : Ui.dp(22);
+        // Always clear the punch-hole / DisplayCutout on bar phones in both portrait (top cutout) and landscape (left/right cutout)
+        int topSafe = (landscape ? Math.max(Ui.statusInset, Ui.dp(12)) : Math.max(Ui.statusInset, Ui.dp(34))) + Ui.dp(10);
+        int leftSafe = baseSide + (landscape ? Math.max(Ui.cutoutLeft, Ui.dp(32)) : Ui.cutoutLeft);
+        int rightSafe = baseSide + (landscape ? Math.max(Ui.cutoutRight, Ui.dp(32)) : Ui.cutoutRight);
+        int botSafe = Math.max(Ui.navInset, Ui.dp(10)) + Ui.dp(12);
+
         aiTopBtn.setVisibility(narrow ? GONE : VISIBLE);
         pipTopBtn.setVisibility(narrow ? GONE : VISIBLE);
 
         LayoutParams tlp = (LayoutParams) topBar.getLayoutParams();
-        tlp.setMargins(side, Ui.statusInset + Ui.dp(10), side, 0);
+        tlp.setMargins(leftSafe, topSafe, rightSafe, 0);
         topBar.setLayoutParams(tlp);
 
         LayoutParams blp = (LayoutParams) bottomBar.getLayoutParams();
-        blp.setMargins(side, 0, side, Ui.navInset + Ui.dp(12));
+        blp.setMargins(leftSafe, 0, rightSafe, botSafe);
         bottomBar.setLayoutParams(blp);
+
+        LayoutParams ulp = (LayoutParams) unlockBtn.getLayoutParams();
+        ulp.setMargins(leftSafe + Ui.dp(4), topSafe + Ui.dp(4), 0, 0);
+        unlockBtn.setLayoutParams(ulp);
+
+        LayoutParams t2lp = (LayoutParams) temp2xBadge.getLayoutParams();
+        t2lp.topMargin = topSafe + Ui.dp(54);
+        temp2xBadge.setLayoutParams(t2lp);
+
+        LayoutParams ahlp = (LayoutParams) aiHud.getLayoutParams();
+        ahlp.topMargin = topSafe + Ui.dp(56);
+        aiHud.setLayoutParams(ahlp);
     }
 
     boolean isOpen() { return open; }
@@ -465,7 +486,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         setChromeVisible(true);
         updatePlaybackUi();
         applyVideoTransform();
-        SponsorBlock.loadFor(m, VideoPlayer.current, () -> seekBar.invalidate());
+        NpuEngine.applyToVideoView(m, texture);
         h.removeCallbacks(uiTick);
         h.post(uiTick);
     }
@@ -596,15 +617,6 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         repeatBtn.set(repIcon, VideoPlayer.repeatMode == VideoPlayer.REPEAT_OFF ? 0x99FFFFFF : Ui.ACCENT);
         seekBar.update(pos, dur);
 
-        // SponsorBlock auto-skip if active video has matching segments
-        if (VideoPlayer.playing && SponsorBlock.isEnabled(m)) {
-            SponsorBlock.Segment seg = SponsorBlock.segmentAt(pos);
-            if (seg != null) {
-                VideoPlayer.seekTo(seg.endMs);
-                showHud(seg.label() + " 건너뜀");
-            }
-        }
-
         // Update subtitles
         if (VideoPlayer.subEnabled) {
             String p = VideoPlayer.primarySub != null ? VideoPlayer.primarySub.textAt(pos, VideoPlayer.subOffsetMs) : null;
@@ -661,6 +673,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         super.onSizeChanged(w, h0, ow, oh);
         adaptLayoutForSize(w, h0);
         applyVideoTransform();
+        NpuEngine.applyToVideoView(m, texture);
     }
 
     // ---- TextureView.SurfaceTextureListener ----
@@ -862,9 +875,13 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     private void showSubtitleSheet(View anchor) {
         List<GlassMenu.Entry> es = new ArrayList<>();
+        es.add(new GlassMenu.Entry(m.getString(R.string.sub_web_search), Icons.GLOBE, false,
+                () -> OnlineSubtitle.showSearchSheet(m, VideoPlayer.current, false)));
         es.add(new GlassMenu.Entry(m.getString(R.string.sub_ai_generate), Icons.AI, false, this::startAiSubtitle));
         es.add(new GlassMenu.Entry(m.getString(R.string.sub_load_file), Icons.FOLDER, false, () -> m.pickSubtitleFile(false)));
         es.add(new GlassMenu.Entry(m.getString(R.string.sub_load_secondary), Icons.SUBTITLE, false, () -> m.pickSubtitleFile(true)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.sub_web_secondary), Icons.SEARCH, false,
+                () -> OnlineSubtitle.showSearchSheet(m, VideoPlayer.current, true)));
         if (VideoPlayer.secondarySub != null) {
             es.add(new GlassMenu.Entry(m.getString(R.string.sub_clear_secondary), Icons.CLOSE, false, () -> VideoPlayer.secondarySub = null));
         }
@@ -1006,6 +1023,9 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     private void showAudioMenu(View anchor) {
         List<GlassMenu.Entry> es = new ArrayList<>();
+        es.add(new GlassMenu.Entry(m.getString(R.string.npu_title) + " (" + NpuEngine.summaryLabel(m) + ")",
+                Icons.AI, NpuEngine.superResMode != NpuEngine.MODE_OFF || NpuEngine.voiceIsolation,
+                () -> NpuEngine.showSheet(m, anchorOf(anchor), texture)));
         es.add(new GlassMenu.Entry(m.getString(R.string.equalizer), Icons.EQ, false, () -> showEqSheet(anchorOf(anchor))));
         for (VideoPlayer.TrackItem tr : VideoPlayer.audioTracks) {
             GlassMenu.Entry e = new GlassMenu.Entry(tr.label, Icons.AUDIO, tr.index == VideoPlayer.selectedAudioTrack,
@@ -1068,7 +1088,12 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     private void showMoreMenu(View anchor) {
         List<GlassMenu.Entry> es = new ArrayList<>();
-        es.add(new GlassMenu.Entry(m.getString(R.string.sub_ai_generate), Icons.AI, false, this::startAiSubtitle));
+        es.add(new GlassMenu.Entry(m.getString(R.string.npu_title), Icons.AI,
+                NpuEngine.superResMode != NpuEngine.MODE_OFF || NpuEngine.voiceIsolation,
+                () -> NpuEngine.showSheet(m, anchorOf(anchor), texture)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.sub_web_search), Icons.GLOBE, false,
+                () -> OnlineSubtitle.showSearchSheet(m, VideoPlayer.current, false)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.sub_ai_generate), Icons.SUBTITLE, false, this::startAiSubtitle));
         es.add(new GlassMenu.Entry(m.getString(R.string.pip_mode), Icons.PIP, false, () -> m.enterPip()));
         es.add(new GlassMenu.Entry(m.getString(R.string.ab_repeat), Icons.AB, false, () -> showAbSheet(anchorOf(anchor))));
         es.add(new GlassMenu.Entry(m.getString(R.string.bookmarks), Icons.BOOKMARK, false, () -> showBookmarksSheet(anchorOf(anchor))));
@@ -1241,18 +1266,6 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
                         ? pad + usable * Ui.clamp(VideoPlayer.repeatB / (float) dur, 0f, 1f) : ax + Ui.dpf(4);
                 p.setColor(0xCCFFCA28);
                 c.drawRoundRect(ax, cy - th / 2f, bx, cy + th / 2f, th / 2f, th / 2f, p);
-            }
-
-            // SponsorBlock colored segment overlays
-            if (dur > 0 && !SponsorBlock.currentSegments.isEmpty()) {
-                for (SponsorBlock.Segment seg : SponsorBlock.currentSegments) {
-                    float sx = pad + usable * Ui.clamp(seg.startMs / (float) dur, 0f, 1f);
-                    float ex = pad + usable * Ui.clamp(seg.endMs / (float) dur, 0f, 1f);
-                    if (ex > sx) {
-                        p.setColor(seg.color());
-                        c.drawRoundRect(sx, cy - th / 2f, ex, cy + th / 2f, th / 2f, th / 2f, p);
-                    }
-                }
             }
 
             // Progress fill (A-style = luminous white track; G-style = accent)

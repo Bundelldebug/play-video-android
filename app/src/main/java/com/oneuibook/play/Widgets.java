@@ -495,4 +495,27 @@ final class Widgets {
         RectF anchor = new RectF(Ui.screenW / 2f - Ui.dpf(40), Ui.screenH - Ui.dpf(80), Ui.screenW / 2f + Ui.dpf(40), Ui.screenH - Ui.dpf(40));
         GlassMenu.customSheet(m, anchor, title, wrap, null);
     }
+
+    interface PickCb { void onPicked(int index); }
+
+    /** Unified single-choice glass sheet replacing stock AlertDialog across all settings & pickers. */
+    static void pickSheet(MainActivity m, View anchorView, String title, String[] labels, int selectedIdx, PickCb cb) {
+        RectF anchor;
+        if (anchorView != null && anchorView.getWidth() > 0) {
+            float[] o = Glass.abs(anchorView);
+            anchor = new RectF(o[0], o[1], o[0] + anchorView.getWidth(), o[1] + anchorView.getHeight());
+        } else {
+            anchor = new RectF(Ui.screenW / 2f - Ui.dpf(40), Ui.screenH - Ui.dpf(80), Ui.screenW / 2f + Ui.dpf(40), Ui.screenH - Ui.dpf(40));
+        }
+        java.util.List<GlassMenu.Entry> es = new java.util.ArrayList<>();
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            GlassMenu.Entry e = new GlassMenu.Entry(labels[i], 0, i == selectedIdx, () -> {
+                if (cb != null) cb.onPicked(idx);
+            });
+            e.checkable = true;
+            es.add(e);
+        }
+        GlassMenu.sheet(m, anchor, title, es, null);
+    }
 }

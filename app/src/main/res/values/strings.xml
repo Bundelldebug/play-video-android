@@ -63,6 +63,8 @@
     <string name="aspect_1_1">1:1</string>
     <string name="subtitles">자막</string>
     <string name="sub_off">자막 끄기</string>
+    <string name="sub_web_search">웹에서 자막 검색 · 다운로드</string>
+    <string name="sub_web_secondary">2차 자막 웹 검색 · 다운로드</string>
     <string name="sub_load_file">외부 자막 파일 불러오기</string>
     <string name="sub_load_secondary">2차 자막(이중 자막) 불러오기</string>
     <string name="sub_clear_secondary">2차 자막 해제</string>
@@ -166,7 +168,9 @@
     <string name="auto_sub">같은 이름 자막 자동 불러오기</string>
     <string name="gesture_brightness">스와이프로 밝기 조절</string>
     <string name="gesture_volume">스와이프로 볼륨 조절</string>
-    <string name="sponsorblock">SponsorBlock 자동 건너뛰기</string>
+    <string name="npu_title">NPU 화질 · 대사 가속</string>
+    <string name="opensubtitles_key">OpenSubtitles API 키</string>
+    <string name="subdl_key">Subdl API 키</string>
     <string name="clear_cache">캐시 비우기</string>
     <string name="cache_cleared">캐시를 비웠습니다</string>
     <string name="upd_check">업데이트 확인</string>

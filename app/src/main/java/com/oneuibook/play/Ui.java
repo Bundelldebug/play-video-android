@@ -29,7 +29,7 @@ final class Ui {
     static boolean dark;
     static boolean glass = true;
     static int screenW, screenH;
-    static int statusInset, navInset, imeInset;
+    static int statusInset, navInset, imeInset, cutoutLeft, cutoutRight;
 
     // Play's signature default accent is vivid blue (matching the launcher icon)
     static final int ACCENT_DEFAULT = 0xFF387AFF;

@@ -45,6 +45,8 @@ final class Settings {
             app.row(Icons.SETTINGS, Ui.ACCENT, m.getString(R.string.set_general), null, true, v -> m.push(new GeneralPage(m)));
             app.row(Icons.APPEARANCE, Ui.ACCENT, m.getString(R.string.set_appearance), null, true, v -> m.push(new AppearancePage(m)));
             app.row(Icons.PLAY, Ui.ACCENT, m.getString(R.string.set_playback), null, true, v -> m.push(new PlaybackPage(m)));
+            app.row(Icons.AI, Ui.ACCENT, m.getString(R.string.npu_title), NpuEngine.summaryLabel(m), true,
+                    v -> NpuEngine.showSheet(m, m.header.pillInRoot(), m.playerOverlay.videoTexture()));
             app.row(Icons.SUBTITLE, Ui.ACCENT, m.getString(R.string.set_subtitles), null, true, v -> m.push(new SubtitleSettingsPage(m)));
             app.row(Icons.AI, Ui.ACCENT, m.getString(R.string.set_ai), engineLabel(m), true, v -> m.push(new AiSettingsPage(m)));
             app.row(Icons.STORAGE, Ui.ACCENT, m.getString(R.string.set_storage), null, true, v -> m.push(new StoragePage(m)));
@@ -86,10 +88,11 @@ final class Settings {
             g.row(Icons.GLOBE, Ui.ACCENT, m.getString(R.string.language), langLbl, true, v -> {
                 String[] keys = {"system", "ko", "en", "ja"};
                 String[] labels = {m.getString(R.string.lang_system), "한국어", "English", "日本語"};
-                new AlertDialog.Builder(m).setTitle(R.string.language).setItems(labels, (d, i) -> {
+                int sel = "ko".equals(lang) ? 1 : ("en".equals(lang) ? 2 : ("ja".equals(lang) ? 3 : 0));
+                Widgets.pickSheet(m, v, m.getString(R.string.language), labels, sel, i -> {
                     p.edit().putString("lang", keys[i]).apply();
                     m.recreate();
-                }).show();
+                });
             });
 
             String uf = p.getString("unfold_ui", "fold");
@@ -97,10 +100,10 @@ final class Settings {
                     m.getString("tablet".equals(uf) ? R.string.unfold_tablet : R.string.unfold_fold), true, v -> {
                 String[] keys = {"fold", "tablet"};
                 String[] labels = {m.getString(R.string.unfold_fold), m.getString(R.string.unfold_tablet)};
-                new AlertDialog.Builder(m).setTitle(R.string.unfold_ui).setItems(labels, (d, i) -> {
+                Widgets.pickSheet(m, v, m.getString(R.string.unfold_ui), labels, "tablet".equals(uf) ? 1 : 0, i -> {
                     p.edit().putString("unfold_ui", keys[i]).apply();
                     m.recreate();
-                }).show();
+                });
             });
             content.addView(g, Widgets.MW);
         }
@@ -121,10 +124,11 @@ final class Settings {
             g.row(Icons.APPEARANCE, Ui.ACCENT, m.getString(R.string.theme), tLbl, true, v -> {
                 String[] keys = {"system", "light", "dark"};
                 String[] labels = {m.getString(R.string.theme_system), m.getString(R.string.theme_light), m.getString(R.string.theme_dark)};
-                new AlertDialog.Builder(m).setTitle(R.string.theme).setItems(labels, (d, i) -> {
+                int sel = "light".equals(theme) ? 1 : ("dark".equals(theme) ? 2 : 0);
+                Widgets.pickSheet(m, v, m.getString(R.string.theme), labels, sel, i -> {
                     p.edit().putString("theme", keys[i]).apply();
                     m.recreate();
-                }).show();
+                });
             });
 
             String style = p.getString("ui_style", "prism");
@@ -132,10 +136,10 @@ final class Settings {
                     m.getString("oneui".equals(style) ? R.string.style_g : R.string.style_a), true, v -> {
                 String[] keys = {"prism", "oneui"};
                 String[] labels = {m.getString(R.string.style_a), m.getString(R.string.style_g)};
-                new AlertDialog.Builder(m).setTitle(R.string.style_title).setItems(labels, (d, i) -> {
+                Widgets.pickSheet(m, v, m.getString(R.string.style_title), labels, "oneui".equals(style) ? 1 : 0, i -> {
                     p.edit().putString("ui_style", keys[i]).apply();
                     m.recreate();
-                }).show();
+                });
             });
 
             // Accent color picker swatches
@@ -199,7 +203,6 @@ final class Settings {
             toggleRow(g, Icons.PIP, m.getString(R.string.auto_pip), "auto_pip", true, null);
             toggleRow(g, Icons.BRIGHTNESS, m.getString(R.string.gesture_brightness), "gesture_brightness", true, null);
             toggleRow(g, Icons.VOLUME, m.getString(R.string.gesture_volume), "gesture_volume", true, null);
-            toggleRow(g, Icons.FORWARD, m.getString(R.string.sponsorblock), "sb_enabled", true, null);
             String rot = p.getString("auto_rotate", "sensor");
             String rotLbl = "video".equals(rot) ? m.getString(R.string.auto_rotate_video)
                     : ("portrait".equals(rot) ? m.getString(R.string.auto_rotate_portrait)
@@ -209,20 +212,24 @@ final class Settings {
                 String[] keys = {"sensor", "video", "portrait", "landscape"};
                 String[] labels = {m.getString(R.string.auto_rotate_sensor), m.getString(R.string.auto_rotate_video),
                         m.getString(R.string.auto_rotate_portrait), m.getString(R.string.auto_rotate_landscape)};
-                new AlertDialog.Builder(m).setTitle(R.string.auto_rotate).setItems(labels, (d, i) -> {
+                int sel = "video".equals(rot) ? 1 : ("portrait".equals(rot) ? 2 : ("landscape".equals(rot) ? 3 : 0));
+                Widgets.pickSheet(m, v, m.getString(R.string.auto_rotate), labels, sel, i -> {
                     p.edit().putString("auto_rotate", keys[i]).apply();
                     rebuild();
-                }).show();
+                });
             });
             int dt = p.getInt("double_tap_sec", 10);
             g.row(Icons.FORWARD, Ui.ACCENT, m.getString(R.string.double_tap_sec), dt + "초", true, v -> {
                 int[] secs = {5, 10, 15, 30};
                 String[] labels = {"5초", "10초", "15초", "30초"};
-                new AlertDialog.Builder(m).setTitle(R.string.double_tap_sec).setItems(labels, (d, i) -> {
+                int sel = dt == 5 ? 0 : (dt == 15 ? 2 : (dt == 30 ? 3 : 1));
+                Widgets.pickSheet(m, v, m.getString(R.string.double_tap_sec), labels, sel, i -> {
                     p.edit().putInt("double_tap_sec", secs[i]).apply();
                     rebuild();
-                }).show();
+                });
             });
+            g.row(Icons.AI, Ui.ACCENT, m.getString(R.string.npu_title), NpuEngine.summaryLabel(m), true,
+                    v -> NpuEngine.showSheet(m, m.header.pillInRoot(), m.playerOverlay.videoTexture()));
             g.row(Icons.EQ, Ui.ACCENT, m.getString(R.string.equalizer),
                     AudioFx.PRESET_NAMES[Math.max(0, Math.min(AudioFx.PRESET_NAMES.length - 1, AudioFx.presetIndex))],
                     true, v -> m.playerOverlay.showEqSheet(m.header.pillInRoot()));
@@ -267,8 +274,32 @@ final class Settings {
             };
             bgBox.addView(bgSlider);
             g.addCustom(bgBox);
-
             content.addView(g, Widgets.MW);
+
+            Widgets.Group webG = new Widgets.Group(m, m.getString(R.string.sub_web_search));
+            String osKey = p.getString("opensubtitles_api_key", "");
+            webG.row(Icons.GLOBE, Ui.ACCENT, m.getString(R.string.opensubtitles_key), osKey.isEmpty() ? "미설정" : "설정됨", true, v -> {
+                LinearLayout form = new LinearLayout(m);
+                form.setOrientation(LinearLayout.VERTICAL);
+                EditText et = Widgets.formField(m, m.getString(R.string.opensubtitles_key), "OpenSubtitles REST API 키 (선택)", osKey,
+                        InputType.TYPE_CLASS_TEXT, form);
+                Widgets.showFormSheet(m, m.getString(R.string.opensubtitles_key), form, m.getString(R.string.save), () -> {
+                    p.edit().putString("opensubtitles_api_key", et.getText().toString().trim()).apply();
+                    rebuild();
+                });
+            });
+            String sdKey = p.getString("subdl_api_key", "");
+            webG.row(Icons.SEARCH, Ui.ACCENT, m.getString(R.string.subdl_key), sdKey.isEmpty() ? "미설정" : "설정됨", true, v -> {
+                LinearLayout form = new LinearLayout(m);
+                form.setOrientation(LinearLayout.VERTICAL);
+                EditText et = Widgets.formField(m, m.getString(R.string.subdl_key), "Subdl API 키 (선택)", sdKey,
+                        InputType.TYPE_CLASS_TEXT, form);
+                Widgets.showFormSheet(m, m.getString(R.string.subdl_key), form, m.getString(R.string.save), () -> {
+                    p.edit().putString("subdl_api_key", et.getText().toString().trim()).apply();
+                    rebuild();
+                });
+            });
+            content.addView(webG, Widgets.MW);
         }
     }
 
@@ -281,16 +312,21 @@ final class Settings {
             SharedPreferences p = MainActivity.prefs(m);
             String curEngine = p.getString("ai_engine", AiSubtitle.ENGINE_GEMINI);
             String curEngineName = AiSubtitle.ENGINE_NAMES[0];
+            int curIdx = 0;
             for (int i = 0; i < AiSubtitle.ENGINE_KEYS.length; i++) {
-                if (AiSubtitle.ENGINE_KEYS[i].equals(curEngine)) curEngineName = AiSubtitle.ENGINE_NAMES[i];
+                if (AiSubtitle.ENGINE_KEYS[i].equals(curEngine)) {
+                    curEngineName = AiSubtitle.ENGINE_NAMES[i];
+                    curIdx = i;
+                }
             }
+            final int selEngine = curIdx;
 
             Widgets.Group g = new Widgets.Group(m, "AI 자막 엔진 및 API");
             g.row(Icons.AI, Ui.ACCENT, m.getString(R.string.ai_engine), curEngineName, true, v -> {
-                new AlertDialog.Builder(m).setTitle(R.string.ai_engine).setItems(AiSubtitle.ENGINE_NAMES, (d, i) -> {
+                Widgets.pickSheet(m, v, m.getString(R.string.ai_engine), AiSubtitle.ENGINE_NAMES, selEngine, i -> {
                     p.edit().putString("ai_engine", AiSubtitle.ENGINE_KEYS[i]).apply();
                     rebuild();
-                }).show();
+                });
             });
 
             String key = p.getString("ai_api_key", "");
@@ -331,12 +367,17 @@ final class Settings {
         }
 
         private void pickLang(MainActivity m, String prefKey, int titleRes) {
+            String cur = MainActivity.prefs(m).getString(prefKey, "auto");
+            int sel = 0;
             String[] labels = new String[AiSubtitle.LANG_LABELS.length];
-            for (int i = 0; i < labels.length; i++) labels[i] = m.getString(AiSubtitle.LANG_LABELS[i]);
-            new AlertDialog.Builder(m).setTitle(titleRes).setItems(labels, (d, i) -> {
+            for (int i = 0; i < labels.length; i++) {
+                labels[i] = m.getString(AiSubtitle.LANG_LABELS[i]);
+                if (AiSubtitle.LANG_KEYS[i].equals(cur)) sel = i;
+            }
+            Widgets.pickSheet(m, null, m.getString(titleRes), labels, sel, i -> {
                 MainActivity.prefs(m).edit().putString(prefKey, AiSubtitle.LANG_KEYS[i]).apply();
                 rebuild();
-            }).show();
+            });
         }
 
         private String langLabel(Context c, String key) {

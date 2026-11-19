@@ -29,12 +29,13 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Play Video Player (v9.5.2) — MainActivity orchestrating glass chrome,
+ * Play Video Player (v9.5.4) — MainActivity orchestrating glass chrome,
  * mobile / foldable / tablet responsive layouts, video library, full-screen cinema player,
- * PiP, SAF file/subtitle pickers, in-app updater, and AI subtitle generation.
+ * PiP, SAF file/subtitle pickers, online subtitle search, on-device NPU acceleration,
+ * in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.3";
+    static final String VERSION = "9.5.4";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;
@@ -79,6 +80,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         Ui.init(this, p);
         Subtitle.loadStyle(p);
         AudioFx.init(this);
+        NpuEngine.init(this);
         VideoLibrary.init(this);
         VideoPlayer.app = getApplicationContext();
 
@@ -87,6 +89,9 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         w.setStatusBarColor(Color.TRANSPARENT);
         w.setNavigationBarColor(Color.TRANSPARENT);
         w.setNavigationBarContrastEnforced(false);
+        android.view.WindowManager.LayoutParams wlp = w.getAttributes();
+        wlp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        w.setAttributes(wlp);
         w.getDecorView().setBackgroundColor(Ui.bg());
 
         root = new FrameLayout(this);
@@ -117,12 +122,19 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         setContentView(root);
 
         root.setOnApplyWindowInsetsListener((v, insets) -> {
-            int st = insets.getInsets(WindowInsets.Type.statusBars()).top;
-            int nav = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+            android.graphics.Insets sys = insets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            android.graphics.Insets cut = insets.getInsets(WindowInsets.Type.displayCutout());
+            int st = Math.max(sys.top, cut.top);
+            int nav = Math.max(sys.bottom, cut.bottom);
+            int cl = Math.max(sys.left, cut.left);
+            int cr = Math.max(sys.right, cut.right);
             int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
-            boolean changed = st != Ui.statusInset || nav != Ui.navInset;
+            boolean changed = st != Ui.statusInset || nav != Ui.navInset || cl != Ui.cutoutLeft || cr != Ui.cutoutRight;
             Ui.statusInset = st;
             Ui.navInset = nav;
+            Ui.cutoutLeft = cl;
+            Ui.cutoutRight = cr;
             Ui.imeInset = ime;
             dock.setImeOffset(ime);
             fitHeader();
