@@ -1,0 +1,716 @@
+package com.oneuibook.play;
+
+import android.animation.ValueAnimator;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
+import android.graphics.Canvas;
+import android.graphics.LinearGradient;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.RecordingCanvas;
+import android.graphics.RectF;
+import android.graphics.RenderNode;
+import android.graphics.Shader;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextPaint;
+import android.text.TextUtils;
+import android.text.TextWatcher;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.VelocityTracker;
+import android.view.View;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+
+/**
+ * Floating adaptive chrome (matching Prism):
+ * - Phone: bottom glass tab pill with draggable refracting lens + detached search bubble + floating mini video bar
+ * - Foldable unfolded: vertical glass tab rail on the right (or tablet mode per preference)
+ * - Tablet: top-center glass tab pill with sidebar toggle + wide bottom mini video bar
+ */
+final class Dock extends FrameLayout {
+    interface Listener {
+        void onTab(int index, boolean reselect);
+        void onMini();
+        void onSearch();
+        void onExitSearch();
+        void onQuery(String q, boolean submit);
+        default void onSidebar() {}
+    }
+
+    static final int[] TAB_ICONS = {Icons.HOME, Icons.FOLDER, Icons.LIBRARY, Icons.SETTINGS};
+
+    private final Glass.Backdrop backdrop;
+    private Listener listener;
+    private final String[] labels;
+    int selected;
+
+    boolean rail, tablet;
+    private float sideW, sideP;
+
+    float collapse, search;
+    private ValueAnimator collapseAnim, searchAnim, miniShowAnim, hintTypeAnim, hintShimmerAnim;
+    private float hintType = 0f, hintShimmer = 0f;
+    private final TextPaint hintPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final String searchHintText;
+    private int imeOffset;
+
+    final RectF pill = new RectF(), circle = new RectF(), lens = new RectF(), mini = new RectF();
+    private final RectF tmp = new RectF();
+
+    private final Glass.Surface barGlass = new Glass.Surface();
+    private final Glass.Surface lensGlass = new Glass.Surface();
+    private final Glass.Surface miniGlass = new Glass.Surface();
+    private final RenderNode contentNode = new RenderNode("dock-content");
+
+    private final Ui.Spring lensX = new Ui.Spring(420f, 0.72f, 0.4f);
+    private final Ui.Spring lift = new Ui.Spring(560f, 0.78f, 0.002f);
+    private final Ui.Spring miniPress = new Ui.Spring(700f, 0.9f, 0.002f);
+    private final Ui.Spring searchPress = new Ui.Spring(700f, 0.9f, 0.002f);
+    private final Ui.Spring barPress = new Ui.Spring(520f, 0.85f, 0.002f);
+    private float touchX, touchY;
+    private VelocityTracker vt;
+
+    private final TextPaint label = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint title = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint sub = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint art = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Matrix artM = new Matrix();
+    private Bitmap thumbBmp;
+    private String thumbKey;
+
+    final EditText field;
+    private boolean miniVisible;
+    float miniShow;
+
+    private static final int T_NONE = 0, T_TAB = 1, T_SEARCH = 2, T_MINI = 3, T_MINI_PLAY = 4, T_MINI_CLOSE = 5, T_SIDE = 6;
+    private int touch = T_NONE;
+    private float downX, downY;
+    private boolean dragging;
+
+    Dock(Context c, Glass.Backdrop backdrop, String[] labels) {
+        super(c);
+        this.backdrop = backdrop;
+        this.labels = labels;
+        setWillNotDraw(false);
+        setClipChildren(false);
+        label.setTypeface(Ui.semibold);
+        label.setTextSize(Ui.sp(10.5f));
+        label.setTextAlign(Paint.Align.CENTER);
+        title.setTypeface(Ui.semibold);
+        title.setTextSize(Ui.sp(14f));
+        sub.setTypeface(Ui.regular);
+        sub.setTextSize(Ui.sp(12f));
+        hintPaint.setTypeface(Ui.medium);
+        hintPaint.setTextSize(Ui.sp(15.5f));
+        searchHintText = c.getString(R.string.search_hint);
+
+        barGlass.blurDp = 2.5f;
+        barGlass.refractDp = 17f;
+        barGlass.edgeDp = 26f;
+        barGlass.outerDp = 7f;
+        barGlass.outerRefractDp = 12f;
+        barGlass.chroma = 0f;
+        barGlass.vibrance = 1.35f;
+        barGlass.rim = 0.32f;
+
+        miniGlass.blurDp = 2f;
+        miniGlass.refractDp = 17f;
+        miniGlass.edgeDp = 24f;
+        miniGlass.outerDp = 7f;
+        miniGlass.outerRefractDp = 12f;
+        miniGlass.chroma = 0f;
+        miniGlass.vibrance = 1.5f;
+        miniGlass.rim = 0.32f;
+
+        lensGlass.blur = false;
+        lensGlass.refractDp = 22f;
+        lensGlass.edgeDp = 28f;
+        lensGlass.outerDp = 8f;
+        lensGlass.outerRefractDp = 14f;
+        lensGlass.chroma = 0.9f;
+        lensGlass.rim = 0.6f;
+        lensGlass.tint = Ui.dark ? 0x0FFFFFFF : 0x0AFFFFFF;
+        lensGlass.shadowAlpha = 0.16f;
+        lensGlass.strokeColor = Ui.dark ? 0x40FFFFFF : 0x1A000000;
+
+        Runnable inv = this::invalidate;
+        lensX.onUpdate = inv;
+        lift.onUpdate = inv;
+        miniPress.onUpdate = inv;
+        searchPress.onUpdate = inv;
+        barPress.onUpdate = inv;
+
+        field = new EditText(c);
+        field.setBackground(null);
+        field.setSingleLine(true);
+        field.setHint(null);
+        field.setIncludeFontPadding(false);
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
+        field.setTextColor(Ui.text());
+        field.setHintTextColor(Ui.text2());
+        field.setTypeface(Ui.regular);
+        field.setInputType(InputType.TYPE_CLASS_TEXT);
+        field.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        field.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        field.setPadding(0, 0, 0, 0);
+        field.setVisibility(GONE);
+        field.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int d) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int d) {}
+            @Override public void afterTextChanged(Editable e) {
+                invalidate();
+                if (listener != null) listener.onQuery(e.toString(), false);
+            }
+        });
+        field.setOnEditorActionListener((v, id, ev) -> {
+            if (id == EditorInfo.IME_ACTION_SEARCH || (ev != null && ev.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                if (listener != null) listener.onQuery(field.getText().toString(), true);
+                hideIme();
+                return true;
+            }
+            return false;
+        });
+        addView(field, new LayoutParams(1, 1));
+        VideoPlayer.listeners.add(this::onPlayer);
+        onPlayer();
+    }
+
+    static boolean tabletFor(int W, int H) {
+        float wd = W / Ui.density, hd = H / Ui.density;
+        if (Math.min(wd, hd) < 600) return false;
+        float ratio = Math.max(wd, hd) / Math.max(1f, Math.min(wd, hd));
+        return Ui.unfoldTablet || ratio >= 1.35f;
+    }
+
+    static boolean railFor(int W, int H) {
+        float wd = W / Ui.density, hd = H / Ui.density;
+        if (Math.min(wd, hd) < 600) return false;
+        return !tabletFor(W, H);
+    }
+
+    void setListener(Listener l) { listener = l; }
+
+    void setSidebar(float widthPx, float progress) {
+        sideW = widthPx;
+        sideP = progress;
+        invalidate();
+    }
+
+    private float contentLeft() { return tablet ? sideW * sideP : 0f; }
+    private float lead() { return tablet ? Ui.dpf(46) * (1f - search) : 0f; }
+
+    void select(int i, boolean animate) {
+        selected = Ui.clamp(i, 0, 3) == i ? i : 0;
+        if (getWidth() > 0) {
+            layoutRects();
+            float target = tabCenter(selected);
+            if (animate) lensX.to(target); else lensX.snap(target);
+        }
+        invalidate();
+    }
+
+    void setCollapsed(boolean c) {
+        if (rail || tablet || search > 0.1f) c = false;
+        float to = c ? 1f : 0f;
+        if (collapseAnim != null) collapseAnim.cancel();
+        collapseAnim = Ui.animate(collapse, to, 320, Ui.EMPHASIZED, a -> { collapse = (float) a.getAnimatedValue(); invalidate(); });
+    }
+
+    void setSearchMode(boolean on) {
+        float to = on ? 1f : 0f;
+        if (searchAnim != null) searchAnim.cancel();
+        if (hintTypeAnim != null) hintTypeAnim.cancel();
+        if (hintShimmerAnim != null) hintShimmerAnim.cancel();
+        if (on) {
+            field.setVisibility(VISIBLE);
+            field.requestFocus();
+            showIme();
+            hintType = 0f;
+            // Typing-out hint animation ("무엇을 찾고 있나요?")
+            hintTypeAnim = ValueAnimator.ofFloat(0f, 1f);
+            hintTypeAnim.setStartDelay(140);
+            hintTypeAnim.setDuration(720);
+            hintTypeAnim.setInterpolator(Ui.DECEL);
+            hintTypeAnim.addUpdateListener(a -> { hintType = (float) a.getAnimatedValue(); invalidate(); });
+            hintTypeAnim.start();
+            // Subtle continuous gradient shimmer across the hint text
+            hintShimmerAnim = ValueAnimator.ofFloat(0f, 1f);
+            hintShimmerAnim.setDuration(2600);
+            hintShimmerAnim.setRepeatCount(ValueAnimator.INFINITE);
+            hintShimmerAnim.setInterpolator(new android.view.animation.LinearInterpolator());
+            hintShimmerAnim.addUpdateListener(a -> {
+                if (field.getText().length() == 0 && search > 0.2f) {
+                    hintShimmer = (float) a.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            hintShimmerAnim.start();
+        } else {
+            field.setText("");
+            hideIme();
+            hintType = 0f;
+        }
+        searchAnim = Ui.animate(search, to, 360, Ui.EMPHASIZED, a -> {
+            search = (float) a.getAnimatedValue();
+            if (search <= 0.01f && !on) field.setVisibility(GONE);
+            placeField();
+            invalidate();
+        });
+    }
+
+    void setImeOffset(int px) { imeOffset = px; placeField(); invalidate(); }
+
+    boolean animating() {
+        return lensX.running || lift.running || miniPress.running || searchPress.running || barPress.running
+                || (collapseAnim != null && collapseAnim.isRunning())
+                || (searchAnim != null && searchAnim.isRunning())
+                || (miniShowAnim != null && miniShowAnim.isRunning())
+                || (hintTypeAnim != null && hintTypeAnim.isRunning());
+    }
+
+    float[] snapshot() { return new float[]{getWidth(), getHeight()}; }
+
+    void onPlayer() {
+        VideoLibrary.Video v = VideoPlayer.current;
+        boolean vis = v != null;
+        if (vis != miniVisible) {
+            miniVisible = vis;
+            if (miniShowAnim != null) miniShowAnim.cancel();
+            miniShowAnim = Ui.animate(miniShow, vis ? 1f : 0f, 320, Ui.EMPHASIZED, a -> {
+                miniShow = (float) a.getAnimatedValue();
+                invalidate();
+            });
+        }
+        if (v != null && !v.key().equals(thumbKey)) {
+            thumbKey = v.key();
+            thumbBmp = null;
+            VideoLibrary.loadThumb(getContext(), v, b -> {
+                if (v.key().equals(thumbKey)) { thumbBmp = b; invalidate(); }
+            });
+        }
+        invalidate();
+    }
+
+    private void showIme() {
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void hideIme() {
+        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.hideSoftInputFromWindow(field.getWindowToken(), 0);
+    }
+
+    private void layoutRects() {
+        int W = getWidth(), H = getHeight();
+        if (W <= 0 || H <= 0) return;
+        tablet = tabletFor(W, H);
+        rail = railFor(W, H);
+        float bottomY = H - Ui.navInset - Ui.dpf(14) - imeOffset;
+
+        if (tablet) {
+            // Top-center floating glass tab pill + search circle next to it
+            float top = Ui.statusInset + Ui.dpf(14);
+            float h = Ui.dpf(48);
+            float cl = contentLeft();
+            float availW = W - cl;
+            float pillW = Ui.lerp(Math.min(availW - Ui.dpf(180), Ui.dpf(420)), Math.min(availW - Ui.dpf(80), Ui.dpf(480)), search);
+            float cx = cl + availW / 2f;
+            pill.set(cx - pillW / 2f, top, cx + pillW / 2f, top + h);
+            circle.set(pill.right + Ui.dpf(10), top, pill.right + Ui.dpf(10) + h, top + h);
+            if (search > 0.5f) circle.setEmpty();
+            // Wide bottom mini video bar
+            float mw = Math.min(availW - Ui.dpf(48), Ui.dpf(640));
+            float mh = Ui.dpf(58);
+            mini.set(cx - mw / 2f, bottomY - mh, cx + mw / 2f, bottomY);
+        } else if (rail) {
+            // Foldable unfolded: vertical rail on the right
+            float rw = Ui.dpf(60);
+            float right = W - Ui.dpf(20);
+            float rh = Ui.dpf(256);
+            float cy = H / 2f;
+            pill.set(right - rw, cy - rh / 2f, right, cy + rh / 2f);
+            circle.set(right - rw, pill.bottom + Ui.dpf(12), right, pill.bottom + Ui.dpf(12) + rw);
+            if (search > 0.01f) {
+                float sw = Math.min(W - Ui.dpf(40), Ui.dpf(460));
+                circle.set(Ui.lerp(circle.left, (W - sw) / 2f, search),
+                        Ui.lerp(circle.top, bottomY - Ui.dpf(52), search),
+                        Ui.lerp(circle.right, (W + sw) / 2f, search),
+                        Ui.lerp(circle.bottom, bottomY, search));
+            }
+            float mw = Math.min(W - Ui.dpf(120), Ui.dpf(480));
+            float mh = Ui.dpf(56);
+            mini.set(Ui.dpf(20), bottomY - mh, Ui.dpf(20) + mw, bottomY);
+        } else {
+            // Phone: Prism-style adaptive bottom dock.
+            // When collapsed on scroll down, the tab pill shrinks to a left circle and
+            // the mini video player slides down-inward into the gap between the tab circle and search circle.
+            float pad = Ui.dpf(16);
+            float cp = Ui.EMPHASIZED.getInterpolation(Ui.clamp(collapse, 0f, 1f));
+            float h = Ui.lerp(Ui.dpf(60), Ui.dpf(50), cp);
+            float bottom = bottomY + Ui.dpf(4) * cp;
+            float top = bottom - h;
+            float gap = Ui.dpf(10);
+            float expandedRight = W - pad - Ui.dpf(60) - gap;
+            if (search > 0.01f) {
+                float sLeft = Ui.lerp(W - pad - h, pad, search);
+                circle.set(sLeft, bottomY - Ui.dpf(54), W - pad, bottomY);
+                pill.set(pad, top, Ui.lerp(expandedRight, pad, search), bottom);
+            } else {
+                float pillRight = Ui.lerp(expandedRight, pad + h, cp);
+                pill.set(pad, top, pillRight, bottom);
+                circle.set(W - pad - h, top, W - pad, bottom);
+            }
+            float mh = Ui.dpf(56);
+            float expBottom = bottomY - Ui.dpf(60) - Ui.dpf(8);
+            float eLeft = pad, eTop = expBottom - mh, eRight = W - pad, eBot = expBottom;
+            float cl = pad + h + gap, cr = W - pad - h - gap;
+            mini.set(Ui.lerp(eLeft, cl, cp), Ui.lerp(eTop, top, cp), Ui.lerp(eRight, cr, cp), Ui.lerp(eBot, bottom, cp));
+            if (search > 0.01f) mini.offset(0, Ui.dpf(26) * search);
+        }
+
+        if (!lensX.running && !dragging) lensX.snap(tabCenter(selected));
+        placeField();
+    }
+
+    private float tabCenter(int i) {
+        if (rail) return pill.top + (i + 0.5f) * (pill.height() / 4f);
+        float start = pill.left + lead();
+        float w = Math.max(1f, pill.width() - lead());
+        return start + (i + 0.5f) * (w / 4f);
+    }
+
+    private void placeField() {
+        if (field.getVisibility() != VISIBLE) return;
+        RectF box = tablet ? pill : circle;
+        int l = Math.round(box.left + Ui.dpf(44));
+        int t = Math.round(box.top);
+        int r = Math.round(box.right - Ui.dpf(44));
+        int b = Math.round(box.bottom);
+        int w = r - l, h = b - t;
+        if (w > 0 && h > 0) {
+            field.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+            field.layout(l, t, r, b);
+            field.setAlpha(Ui.clamp((search - 0.35f) / 0.65f, 0f, 1f));
+        }
+    }
+
+    @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        layoutRects();
+        if (changed) lensX.snap(tabCenter(selected));
+    }
+
+    @Override protected void dispatchDraw(Canvas c) {
+        layoutRects();
+        int fg = Ui.text(), fg2 = Ui.text2();
+
+        // 1. Mini video bar
+        if (miniShow > 0.01f && VideoPlayer.current != null && search < 0.5f) {
+            float ty = (1f - miniShow) * Ui.dpf(20);
+            tmp.set(mini.left, mini.top + ty, mini.right, mini.bottom + ty);
+            miniGlass.shapes(tmp, tmp.height() / 2f, null, 0, null, 0);
+            miniGlass.alpha = miniShow * (1f - search * 2f);
+            miniGlass.tint = Ui.barTint();
+            miniGlass.blurDp = Ui.barBlur();
+            miniGlass.pressX = touchX; miniGlass.pressY = touchY;
+            miniGlass.pressR = Ui.dpf(48);
+            miniGlass.pressAmt = touch == T_MINI ? miniPress.value : 0f;
+            miniGlass.draw(c, this, backdrop);
+            drawMiniContent(c, tmp, miniGlass.alpha, fg, fg2);
+        }
+
+        // 2. Main tab pill + search bubble
+        barGlass.tint = Ui.barTint();
+        barGlass.blurDp = Ui.barBlur();
+        barGlass.smoothK = Ui.dpf(18) * lift.value;
+        barGlass.pressX = touchX; barGlass.pressY = touchY;
+        barGlass.pressR = Ui.dpf(48);
+        barGlass.pressAmt = (touch == T_TAB || touch == T_SEARCH) ? Math.max(barPress.value, searchPress.value) : 0f;
+
+        boolean showPill = pill.width() > Ui.dpf(24);
+        boolean showCircle = !circle.isEmpty() && circle.width() > Ui.dpf(24);
+        if (showPill && showCircle) {
+            barGlass.shapes(pill, Math.min(pill.width(), pill.height()) / 2f, circle, circle.height() / 2f, null, 0);
+        } else if (showPill) {
+            barGlass.shapes(pill, Math.min(pill.width(), pill.height()) / 2f, null, 0, null, 0);
+        } else if (showCircle) {
+            barGlass.shapes(circle, circle.height() / 2f, null, 0, null, 0);
+        } else {
+            barGlass.shapes(new RectF(), 0, null, 0, null, 0);
+        }
+        barGlass.alpha = 1f;
+        barGlass.draw(c, this, backdrop);
+
+        // 3. Selection capsule / refracting lens
+        if (showPill && search < 0.8f && collapse < 0.8f) {
+            float l = lift.value;
+            if (rail) {
+                float slotH = pill.height() / 4f;
+                float lh = Ui.lerp(slotH - Ui.dpf(8), slotH + Ui.dpf(6), l);
+                float lw = Ui.lerp(pill.width() - Ui.dpf(10), pill.width() + Ui.dpf(4), l);
+                lens.set(pill.centerX() - lw / 2f, lensX.value - lh / 2f, pill.centerX() + lw / 2f, lensX.value + lh / 2f);
+            } else {
+                float slotW = (pill.width() - lead()) / 4f;
+                float lw = Ui.lerp(slotW - Ui.dpf(8), slotW + Ui.dpf(10), l);
+                float lh = Ui.lerp(pill.height() - Ui.dpf(10), pill.height() + Ui.dpf(4), l);
+                lens.set(lensX.value - lw / 2f, pill.centerY() - lh / 2f, lensX.value + lw / 2f, pill.centerY() + lh / 2f);
+            }
+            if (Ui.gStyle) {
+                fill.setColor(Ui.dark ? 0xFF2E2E35 : 0xFFE6E8EE);
+                c.drawRoundRect(lens, lens.height() / 2f, lens.height() / 2f, fill);
+            } else if (l > 0.02f && c.isHardwareAccelerated()) {
+                // Record tab icons so the lifted lens magnifies and refracts them
+                contentNode.setPosition(0, 0, getWidth(), getHeight());
+                RecordingCanvas rc = contentNode.beginRecording(getWidth(), getHeight());
+                try { drawTabItems(rc, fg, fg2); } finally { contentNode.endRecording(); }
+                lensGlass.extra = contentNode;
+                lensGlass.shapes(lens, Math.min(lens.width(), lens.height()) / 2f, null, 0, null, 0);
+                lensGlass.mag = Ui.lerp(1f, 1.18f, l);
+                lensGlass.magX = lens.centerX();
+                lensGlass.magY = lens.centerY();
+                lensGlass.alpha = 1f;
+                drawTabItems(c, fg, fg2);
+                lensGlass.draw(c, this, backdrop);
+                drawSearchAndLead(c, fg);
+                super.dispatchDraw(c);
+                return;
+            } else {
+                fill.setColor(Ui.dark ? 0x26FFFFFF : 0x14000000);
+                c.drawRoundRect(lens, Math.min(lens.width(), lens.height()) / 2f, Math.min(lens.width(), lens.height()) / 2f, fill);
+            }
+            drawTabItems(c, fg, fg2);
+        } else if (showPill && collapse >= 0.8f) {
+            Icons.draw(c, TAB_ICONS[selected], pill.centerX(), pill.centerY(), Ui.dpf(22), Ui.ACCENT);
+        }
+
+        drawSearchAndLead(c, fg);
+        super.dispatchDraw(c);
+    }
+
+    private void drawTabItems(Canvas c, int fg, int fg2) {
+        float alpha = 1f - Math.max(collapse, search);
+        if (alpha <= 0.01f) return;
+        for (int i = 0; i < 4; i++) {
+            boolean on = i == selected;
+            int col = Ui.alpha(on ? Ui.ACCENT : fg2, alpha);
+            if (rail) {
+                float cy = tabCenter(i);
+                Icons.draw(c, TAB_ICONS[i], pill.centerX(), cy, Ui.dpf(23), col);
+            } else if (tablet) {
+                float cx = tabCenter(i);
+                label.setColor(col);
+                label.setTextSize(Ui.sp(13.5f));
+                label.setTypeface(on ? Ui.bold : Ui.medium);
+                c.drawText(labels[i], cx, pill.centerY() + label.getTextSize() * 0.36f, label);
+            } else {
+                float cx = tabCenter(i);
+                Icons.draw(c, TAB_ICONS[i], cx, pill.centerY() - Ui.dpf(7), Ui.dpf(21), col);
+                label.setColor(col);
+                label.setTextSize(Ui.sp(10f));
+                label.setTypeface(on ? Ui.bold : Ui.medium);
+                c.drawText(labels[i], cx, pill.centerY() + Ui.dpf(15), label);
+            }
+        }
+    }
+
+    private void drawSearchAndLead(Canvas c, int fg) {
+        if (tablet && search < 0.8f) {
+            Icons.draw(c, Icons.SIDEBAR, pill.left + Ui.dpf(26), pill.centerY(), Ui.dpf(21), Ui.alpha(fg, 1f - search));
+        }
+        RectF sb = tablet && search > 0.5f ? pill : circle;
+        if (!sb.isEmpty()) {
+            float sx = search > 0.2f ? sb.left + Ui.dpf(24) : sb.centerX();
+            Icons.draw(c, Icons.SEARCH, sx, sb.centerY(), Ui.dpf(21), search > 0.5f ? Ui.text2() : fg);
+            if (search > 0.5f) {
+                float closeA = (search - 0.5f) * 2f;
+                Icons.draw(c, Icons.CLOSE, sb.right - Ui.dpf(24), sb.centerY(), Ui.dpf(18), Ui.alpha(fg, closeA));
+                // Animated typing gradient hint ("무엇을 찾고 있나요?")
+                if (field.getText().length() == 0 && searchHintText != null && !searchHintText.isEmpty()) {
+                    int total = searchHintText.length();
+                    int shown = Math.max(1, Math.min(total, Math.round(total * (hintType <= 0f ? 1f : hintType))));
+                    String visible = searchHintText.substring(0, shown);
+                    float hx = sb.left + Ui.dpf(44);
+                    Paint.FontMetrics fm = hintPaint.getFontMetrics();
+                    float hy = sb.centerY() - (fm.ascent + fm.descent) / 2f;
+                    float tw = Math.max(Ui.dpf(140), hintPaint.measureText(searchHintText));
+                    float shift = (hintShimmer * 2f - 0.5f) * tw;
+                    hintPaint.setShader(new LinearGradient(hx + shift, hy, hx + shift + tw, hy,
+                            new int[]{0xFF7B5CFF, 0xFF387AFF, 0xFF18B8D8, 0xFF7B5CFF},
+                            new float[]{0f, 0.38f, 0.72f, 1f}, Shader.TileMode.MIRROR));
+                    hintPaint.setAlpha((int) (225 * closeA));
+                    c.drawText(visible, hx, hy, hintPaint);
+                    hintPaint.setShader(null);
+                }
+            }
+        }
+    }
+
+    private void drawMiniContent(Canvas c, RectF box, float a, int fg, int fg2) {
+        VideoLibrary.Video v = VideoPlayer.current;
+        if (v == null || a <= 0.01f) return;
+        boolean compact = !tablet && !rail && collapse > 0.35f;
+        float cp = !tablet && !rail ? Ui.clamp(collapse, 0f, 1f) : 0f;
+        float th = box.height() - Ui.dpf(compact ? 12 : 14);
+        float tw = compact ? th * 1.15f : th * 1.45f;
+        RectF tr = new RectF(box.left + Ui.dpf(compact ? 8 : 10), box.centerY() - th / 2f,
+                box.left + Ui.dpf(compact ? 8 : 10) + tw, box.centerY() + th / 2f);
+        if (thumbBmp != null) {
+            BitmapShader bs = new BitmapShader(thumbBmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            float s = Math.max(tr.width() / thumbBmp.getWidth(), tr.height() / thumbBmp.getHeight());
+            artM.setScale(s, s);
+            artM.postTranslate(tr.left + (tr.width() - thumbBmp.getWidth() * s) / 2f,
+                    tr.top + (tr.height() - thumbBmp.getHeight() * s) / 2f);
+            bs.setLocalMatrix(artM);
+            art.setShader(bs);
+            art.setAlpha((int) (255 * a));
+            c.drawRoundRect(tr, Ui.dpf(compact ? 8 : 10), Ui.dpf(compact ? 8 : 10), art);
+        } else {
+            fill.setColor(Ui.alpha(Ui.placeholder(), a));
+            c.drawRoundRect(tr, Ui.dpf(compact ? 8 : 10), Ui.dpf(compact ? 8 : 10), fill);
+            Icons.draw(c, Icons.VIDEO, tr.centerX(), tr.centerY(), Ui.dpf(16), Ui.alpha(fg2, a));
+        }
+
+        float closeA = a * Ui.clamp(1f - cp * 2.2f, 0f, 1f);
+        float playCx = compact ? box.right - Ui.dpf(24) : box.right - Ui.dpf(64);
+        float closeCx = box.right - Ui.dpf(26);
+        float tx = tr.right + Ui.dpf(compact ? 9 : 12);
+        float avail = Math.max(Ui.dpf(32), playCx - Ui.dpf(20) - tx);
+
+        title.setColor(Ui.alpha(fg, a));
+        CharSequence tt = TextUtils.ellipsize(v.title, title, avail, TextUtils.TruncateAt.END);
+        if (compact) {
+            Paint.FontMetrics fm = title.getFontMetrics();
+            c.drawText(tt, 0, tt.length(), tx, box.centerY() - (fm.ascent + fm.descent) / 2f, title);
+        } else {
+            c.drawText(tt, 0, tt.length(), tx, box.centerY() - Ui.dpf(3), title);
+            sub.setColor(Ui.alpha(fg2, a * (1f - cp * 1.6f)));
+            String info = v.folder + (VideoPlayer.durationMs > 0 ? " · " + Ui.time(VideoPlayer.positionMs()) + " / " + Ui.time(VideoPlayer.durationMs) : "");
+            CharSequence st = TextUtils.ellipsize(info, sub, avail, TextUtils.TruncateAt.END);
+            c.drawText(st, 0, st.length(), tx, box.centerY() + Ui.dpf(14), sub);
+        }
+
+        Icons.draw(c, VideoPlayer.playing ? Icons.PAUSE : Icons.PLAY, playCx, box.centerY(), Ui.dpf(compact ? 20 : 22), Ui.alpha(fg, a));
+        if (closeA > 0.02f) {
+            Icons.draw(c, Icons.CLOSE, closeCx, box.centerY(), Ui.dpf(18), Ui.alpha(fg2, closeA));
+        }
+    }
+
+    private int tabAt(float x, float y) {
+        if (rail) {
+            int i = (int) ((y - pill.top) / (pill.height() / 4f));
+            return Math.max(0, Math.min(3, i));
+        }
+        float start = pill.left + lead();
+        float w = Math.max(1f, pill.width() - lead());
+        int i = (int) ((x - start) / (w / 4f));
+        return Math.max(0, Math.min(3, i));
+    }
+
+    @Override public boolean onTouchEvent(MotionEvent e) {
+        float x = e.getX(), y = e.getY();
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                downX = touchX = x; downY = touchY = y;
+                dragging = false;
+                if (miniShow > 0.5f && search < 0.2f && mini.contains(x, y)) {
+                    boolean compact = !tablet && !rail && collapse > 0.35f;
+                    if (compact) {
+                        if (x > mini.right - Ui.dpf(48)) touch = T_MINI_PLAY;
+                        else touch = T_MINI;
+                    } else {
+                        if (x > mini.right - Ui.dpf(44)) touch = T_MINI_CLOSE;
+                        else if (x > mini.right - Ui.dpf(86)) touch = T_MINI_PLAY;
+                        else touch = T_MINI;
+                    }
+                    miniPress.to(1f);
+                    return true;
+                }
+                RectF sb = tablet && search > 0.5f ? pill : circle;
+                if (!sb.isEmpty() && sb.contains(x, y)) {
+                    if (search > 0.5f && x > sb.right - Ui.dpf(48)) {
+                        if (listener != null) listener.onExitSearch();
+                        return true;
+                    }
+                    touch = T_SEARCH;
+                    searchPress.to(1f);
+                    return true;
+                }
+                if (pill.contains(x, y) && search < 0.5f) {
+                    if (tablet && x < pill.left + lead()) {
+                        touch = T_SIDE;
+                        barPress.to(1f);
+                        return true;
+                    }
+                    touch = T_TAB;
+                    barPress.to(1f);
+                    if (collapse < 0.5f) {
+                        lift.to(1f);
+                        vt = VelocityTracker.obtain();
+                        vt.addMovement(e);
+                    }
+                    return true;
+                }
+                touch = T_NONE;
+                return false;
+
+            case MotionEvent.ACTION_MOVE:
+                touchX = x; touchY = y;
+                if (touch == T_TAB && collapse < 0.5f) {
+                    if (vt != null) vt.addMovement(e);
+                    float d = rail ? Math.abs(y - downY) : Math.abs(x - downX);
+                    if (d > Ui.dpf(8)) dragging = true;
+                    if (dragging) {
+                        float pos = rail
+                                ? Ui.clamp(y, pill.top + pill.height() / 8f, pill.bottom - pill.height() / 8f)
+                                : Ui.clamp(x, pill.left + lead() + (pill.width() - lead()) / 8f, pill.right - (pill.width() - lead()) / 8f);
+                        lensX.snap(pos);
+                    }
+                    return true;
+                }
+                return touch != T_NONE;
+
+            case MotionEvent.ACTION_UP: {
+                int t = touch;
+                touch = T_NONE;
+                miniPress.to(0f); searchPress.to(0f); barPress.to(0f); lift.to(0f);
+                if (vt != null) { vt.recycle(); vt = null; }
+                if (t == T_MINI && listener != null) listener.onMini();
+                else if (t == T_MINI_PLAY) VideoPlayer.toggle();
+                else if (t == T_MINI_CLOSE) VideoPlayer.stopAndClose();
+                else if (t == T_SIDE && listener != null) listener.onSidebar();
+                else if (t == T_SEARCH && listener != null) {
+                    if (search < 0.5f) listener.onSearch();
+                } else if (t == T_TAB && listener != null) {
+                    if (collapse >= 0.5f) {
+                        setCollapsed(false);
+                    } else {
+                        int idx = tabAt(x, y);
+                        boolean re = idx == selected;
+                        selected = idx;
+                        lensX.to(tabCenter(idx));
+                        listener.onTab(idx, re);
+                    }
+                }
+                dragging = false;
+                return true;
+            }
+            case MotionEvent.ACTION_CANCEL:
+                touch = T_NONE;
+                dragging = false;
+                miniPress.to(0f); searchPress.to(0f); barPress.to(0f); lift.to(0f);
+                if (vt != null) { vt.recycle(); vt = null; }
+                lensX.to(tabCenter(selected));
+                return true;
+        }
+        return false;
+    }
+}

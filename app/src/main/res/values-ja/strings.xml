@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">プレイ</string>
+    <string name="tab_home">ホーム</string>
+    <string name="tab_folders">フォルダ</string>
+    <string name="tab_library">ライブラリ</string>
+    <string name="tab_settings">設定</string>
+    <string name="search">検索</string>
+    <string name="search_hint">何をお探しですか？</string>
+    <string name="continue_watching">続きを見る</string>
+    <string name="recently_added">最近追加</string>
+    <string name="all_videos">すべての動画</string>
+    <string name="set_about">プレイについて</string>
+</resources>
