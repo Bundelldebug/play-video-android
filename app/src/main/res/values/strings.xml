@@ -166,6 +166,7 @@
     <string name="auto_sub">같은 이름 자막 자동 불러오기</string>
     <string name="gesture_brightness">스와이프로 밝기 조절</string>
     <string name="gesture_volume">스와이프로 볼륨 조절</string>
+    <string name="sponsorblock">SponsorBlock 자동 건너뛰기</string>
     <string name="clear_cache">캐시 비우기</string>
     <string name="cache_cleared">캐시를 비웠습니다</string>
     <string name="upd_check">업데이트 확인</string>

@@ -465,6 +465,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         setChromeVisible(true);
         updatePlaybackUi();
         applyVideoTransform();
+        SponsorBlock.loadFor(m, VideoPlayer.current, () -> seekBar.invalidate());
         h.removeCallbacks(uiTick);
         h.post(uiTick);
     }
@@ -590,10 +591,19 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         timeCur.setText(Ui.time(pos));
         timeDur.setText(Ui.time(dur));
         playBtn.set(VideoPlayer.playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
-        speedBadge.setText(String.format(Locale.US, "%.2gx", VideoPlayer.speed));
+        speedBadge.setText(formatSpeed(VideoPlayer.speed));
         int repIcon = VideoPlayer.repeatMode == VideoPlayer.REPEAT_ONE ? Icons.REPEAT_ONE : Icons.REPEAT;
         repeatBtn.set(repIcon, VideoPlayer.repeatMode == VideoPlayer.REPEAT_OFF ? 0x99FFFFFF : Ui.ACCENT);
         seekBar.update(pos, dur);
+
+        // SponsorBlock auto-skip if active video has matching segments
+        if (VideoPlayer.playing && SponsorBlock.isEnabled(m)) {
+            SponsorBlock.Segment seg = SponsorBlock.segmentAt(pos);
+            if (seg != null) {
+                VideoPlayer.seekTo(seg.endMs);
+                showHud(seg.label() + " 건너뜀");
+            }
+        }
 
         // Update subtitles
         if (VideoPlayer.subEnabled) {
@@ -770,41 +780,62 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         return new RectF(o[0], o[1], o[0] + v.getWidth(), o[1] + v.getHeight());
     }
 
+    private static String formatSpeed(float s) {
+        if (Math.abs(s - Math.round(s)) < 0.01f) return String.format(Locale.US, "%.1fx", s);
+        if (Math.abs(s * 10f - Math.round(s * 10f)) < 0.01f) return String.format(Locale.US, "%.1fx", s);
+        return String.format(Locale.US, "%.2fx", s);
+    }
+
     private void showSpeedSheet(View anchor) {
         LinearLayout box = new LinearLayout(m);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(Ui.dp(18), Ui.dp(6), Ui.dp(18), Ui.dp(12));
 
-        TextView val = Ui.text(m, String.format(Locale.US, "%.2fx", VideoPlayer.speed), 22, Ui.bold, 0xFFFFFFFF);
+        TextView val = Ui.text(m, formatSpeed(VideoPlayer.speed), 22, Ui.bold, 0xFFFFFFFF);
         val.setGravity(Gravity.CENTER);
         box.addView(val, Widgets.MW);
+
+        float[] presets = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f};
+        TextView[] chips = new TextView[presets.length];
+        Runnable syncPresets = () -> {
+            for (int i = 0; i < presets.length; i++) {
+                if (chips[i] == null) continue;
+                boolean active = Math.abs(VideoPlayer.speed - presets[i]) < 0.02f;
+                chips[i].setBackground(Ui.round(active ? Ui.ACCENT : 0x26FFFFFF, 100));
+            }
+        };
 
         Widgets.Slider sl = new Widgets.Slider(m, (VideoPlayer.speed - 0.25f) / 3.75f);
         sl.darkSurface = true;
         sl.change = (f, u) -> {
             float s = Math.round((0.25f + f * 3.75f) * 20f) / 20f;
             VideoPlayer.setSpeed(s);
-            val.setText(String.format(Locale.US, "%.2fx", s));
+            val.setText(formatSpeed(s));
+            speedBadge.setText(formatSpeed(s));
+            syncPresets.run();
         };
         box.addView(sl);
 
-        float[] presets = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f};
         LinearLayout row = new LinearLayout(m);
         row.setGravity(Gravity.CENTER);
         row.setPadding(0, Ui.dp(8), 0, 0);
-        for (float sp : presets) {
-            TextView c = Ui.text(m, sp + "x", 12.5f, Ui.semibold, 0xFFFFFFFF);
+        for (int i = 0; i < presets.length; i++) {
+            final float sp = presets[i];
+            TextView c = Ui.text(m, formatSpeed(sp), 12.5f, Ui.semibold, 0xFFFFFFFF);
             c.setPadding(Ui.dp(10), Ui.dp(8), Ui.dp(10), Ui.dp(8));
-            c.setBackground(Ui.round(Math.abs(VideoPlayer.speed - sp) < 0.02f ? Ui.ACCENT : 0x26FFFFFF, 100));
+            chips[i] = c;
             c.setOnClickListener(v -> {
                 VideoPlayer.setSpeed(sp);
                 sl.setValue((sp - 0.25f) / 3.75f);
-                val.setText(String.format(Locale.US, "%.2fx", sp));
+                val.setText(formatSpeed(sp));
+                speedBadge.setText(formatSpeed(sp));
+                syncPresets.run();
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.setMargins(Ui.dp(3), 0, Ui.dp(3), 0);
             row.addView(c, lp);
         }
+        syncPresets.run();
         box.addView(row, Widgets.MW);
         GlassMenu.customSheet(m, anchorOf(anchor), m.getString(R.string.speed), box, anchor);
     }
@@ -1210,6 +1241,18 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
                         ? pad + usable * Ui.clamp(VideoPlayer.repeatB / (float) dur, 0f, 1f) : ax + Ui.dpf(4);
                 p.setColor(0xCCFFCA28);
                 c.drawRoundRect(ax, cy - th / 2f, bx, cy + th / 2f, th / 2f, th / 2f, p);
+            }
+
+            // SponsorBlock colored segment overlays
+            if (dur > 0 && !SponsorBlock.currentSegments.isEmpty()) {
+                for (SponsorBlock.Segment seg : SponsorBlock.currentSegments) {
+                    float sx = pad + usable * Ui.clamp(seg.startMs / (float) dur, 0f, 1f);
+                    float ex = pad + usable * Ui.clamp(seg.endMs / (float) dur, 0f, 1f);
+                    if (ex > sx) {
+                        p.setColor(seg.color());
+                        c.drawRoundRect(sx, cy - th / 2f, ex, cy + th / 2f, th / 2f, th / 2f, p);
+                    }
+                }
             }
 
             // Progress fill (A-style = luminous white track; G-style = accent)

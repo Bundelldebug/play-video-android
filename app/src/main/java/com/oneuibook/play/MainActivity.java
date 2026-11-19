@@ -34,7 +34,7 @@ import java.util.Locale;
  * PiP, SAF file/subtitle pickers, in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.2";
+    static final String VERSION = "9.5.3";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;

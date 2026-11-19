@@ -199,6 +199,7 @@ final class Settings {
             toggleRow(g, Icons.PIP, m.getString(R.string.auto_pip), "auto_pip", true, null);
             toggleRow(g, Icons.BRIGHTNESS, m.getString(R.string.gesture_brightness), "gesture_brightness", true, null);
             toggleRow(g, Icons.VOLUME, m.getString(R.string.gesture_volume), "gesture_volume", true, null);
+            toggleRow(g, Icons.FORWARD, m.getString(R.string.sponsorblock), "sb_enabled", true, null);
             String rot = p.getString("auto_rotate", "sensor");
             String rotLbl = "video".equals(rot) ? m.getString(R.string.auto_rotate_video)
                     : ("portrait".equals(rot) ? m.getString(R.string.auto_rotate_portrait)

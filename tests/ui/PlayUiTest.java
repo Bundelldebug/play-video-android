@@ -123,7 +123,9 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.2", MainActivity.VERSION);
+        assertEquals("9.5.3", MainActivity.VERSION);
+        assertEquals("dQw4w9WgXcQ", SponsorBlock.extractVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s"));
+        assertEquals("dQw4w9WgXcQ", SponsorBlock.extractVideoId("https://youtu.be/dQw4w9WgXcQ"));
         saveShot(act.root, 1236, 2745, "phone-home-light.png");
 
         // Collapsed dock with mini video player tucked between tab circle and search circle
