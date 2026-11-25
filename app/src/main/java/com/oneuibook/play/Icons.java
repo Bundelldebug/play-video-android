@@ -22,7 +22,10 @@ final class Icons {
             VOLUME = 36, VOLUME_MUTE = 37, BRIGHTNESS = 38, EQ = 39,
             HEADPHONES = 40, REWIND = 41, FORWARD = 42, SORT = 43,
             GRID = 44, LIST = 45, INFO = 46, STORAGE = 47, APPEARANCE = 48,
-            GLOBE = 49, REFRESH = 50, AB = 51, AUDIO = 52;
+            GLOBE = 49, REFRESH = 50, AB = 51, AUDIO = 52,
+            WAVE = 53, DOWNLOAD = 54, DEVICE = 55, DAC = 56, EARBUDS = 57,
+            BUDS = 58, BUDS2 = 59, BUDS4 = 60, BUDS_LIVE = 61, BUDS_ON = 62,
+            CHEVRON_UP = 63, YOUTUBE = 64, PROSCALER = 65;
 
     private static final Paint P = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final CornerPathEffect ROUND1 = new CornerPathEffect(1.3f);
@@ -393,12 +396,94 @@ final class Icons {
                 c.drawCircle(17.5f, 12f, 2.2f, P);
                 break;
             case AUDIO:
+            case WAVE:
                 stroke(2.0f);
                 c.drawLine(5f, 10f, 5f, 14f, P);
                 c.drawLine(9f, 7f, 9f, 17f, P);
                 c.drawLine(13f, 5f, 13f, 19f, P);
                 c.drawLine(17f, 8f, 17f, 16f, P);
                 c.drawLine(21f, 10.5f, 21f, 13.5f, P);
+                break;
+            case DOWNLOAD:
+                stroke(2.0f);
+                c.drawLine(12f, 4f, 12f, 15.5f, P);
+                p.moveTo(7.5f, 11.5f); p.lineTo(12f, 16f); p.lineTo(16.5f, 11.5f);
+                c.drawPath(p, P);
+                c.drawLine(5f, 19.5f, 19f, 19.5f, P);
+                break;
+            case CHEVRON_UP:
+                stroke(2f);
+                c.drawLine(12f, 20f, 12f, 5f, P);
+                p.moveTo(5.5f, 11f); p.lineTo(12f, 4.5f); p.lineTo(18.5f, 11f);
+                c.drawPath(p, P);
+                break;
+            case DEVICE:
+                stroke(1.8f);
+                R.set(6f, 3.2f, 18f, 20.8f); c.drawRoundRect(R, 2.4f, 2.4f, P);
+                c.drawLine(10f, 18.2f, 14f, 18.2f, P);
+                break;
+            case DAC:
+                stroke(1.7f);
+                R.set(5.5f, 7.2f, 18.5f, 17.8f); c.drawRoundRect(R, 2.8f, 2.8f, P);
+                R.set(9.4f, 3.2f, 14.6f, 7.2f); c.drawRoundRect(R, 1.1f, 1.1f, P);
+                c.drawLine(12f, 17.8f, 12f, 21f, P);
+                fill(); c.drawCircle(12f, 12.5f, 1.5f, P);
+                break;
+            case EARBUDS:
+                stroke(1.75f);
+                c.drawCircle(7.2f, 8.0f, 3.4f, P);
+                c.drawLine(8.6f, 11.2f, 8.6f, 19.2f, P);
+                c.drawCircle(16.8f, 8.0f, 3.4f, P);
+                c.drawLine(15.4f, 11.2f, 15.4f, 19.2f, P);
+                break;
+            case BUDS:
+                stroke(1.55f);
+                R.set(3.95f, 5.15f, 10.85f, 12.05f); c.drawArc(R, 64f, -320f, false, P);
+                p.moveTo(6.5f, 9.7f); p.lineTo(6.5f, 19.25f); p.lineTo(7.65f, 20.2f); p.lineTo(8.8f, 19.25f); p.lineTo(8.8f, 11.75f);
+                c.drawPath(p, P);
+                p.reset();
+                p.moveTo(4.05f, 8.2f); p.cubicTo(1.75f, 8.7f, 1.75f, 11.85f, 3.65f, 12.75f); p.cubicTo(4.65f, 13.2f, 5.65f, 12.65f, 6.15f, 11.9f);
+                c.drawPath(p, P);
+                R.set(13.15f, 5.15f, 20.05f, 12.05f); c.drawArc(R, 116f, 320f, false, P);
+                p.reset();
+                p.moveTo(17.5f, 9.7f); p.lineTo(17.5f, 19.25f); p.lineTo(16.35f, 20.2f); p.lineTo(15.2f, 19.25f); p.lineTo(15.2f, 11.75f);
+                c.drawPath(p, P);
+                p.reset();
+                p.moveTo(19.95f, 8.2f); p.cubicTo(22.25f, 8.7f, 22.25f, 11.85f, 20.35f, 12.75f); p.cubicTo(19.35f, 13.2f, 18.35f, 12.65f, 17.85f, 11.9f);
+                c.drawPath(p, P);
+                break;
+            case BUDS4:
+                stroke(1.6f);
+                p.moveTo(9.7f, 12.75f);
+                p.cubicTo(7.45f, 11.35f, 7.35f, 7.35f, 9.45f, 5.45f);
+                p.cubicTo(11.65f, 3.55f, 16.45f, 3.65f, 18.35f, 6.55f);
+                p.cubicTo(19.85f, 8.85f, 18.95f, 12.25f, 16.05f, 13.45f);
+                c.drawPath(p, P);
+                c.save(); c.rotate(24.5f, 11.4f, 14.0f);
+                R.set(9.4f, 6.25f, 13.4f, 21.15f); c.drawRoundRect(R, 2.0f, 2.0f, P);
+                c.restore();
+                break;
+            case BUDS2:
+            case BUDS_LIVE:
+            case BUDS_ON:
+                stroke(1.6f);
+                R.set(4.15f, 7.25f, 10.65f, 16.75f); c.drawRoundRect(R, 3.25f, 3.85f, P);
+                R.set(13.35f, 7.25f, 19.85f, 16.75f); c.drawRoundRect(R, 3.25f, 3.85f, P);
+                break;
+            case YOUTUBE:
+                fill();
+                R.set(2.4f, 5.2f, 21.6f, 18.8f); c.drawRoundRect(R, 4.4f, 4.4f, P);
+                P.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR));
+                p.moveTo(10f, 8.8f); p.lineTo(15.8f, 12f); p.lineTo(10f, 15.2f); p.close();
+                c.drawPath(p, P);
+                P.setXfermode(null);
+                break;
+            case PROSCALER:
+                stroke(1.9f);
+                R.set(3.2f, 4.8f, 20.8f, 19.2f); c.drawRoundRect(R, 3.2f, 3.2f, P);
+                p.moveTo(7.5f, 15.5f); p.lineTo(16.5f, 8.5f);
+                p.moveTo(12.5f, 8.5f); p.lineTo(16.5f, 8.5f); p.lineTo(16.5f, 12.5f);
+                c.drawPath(p, P);
                 break;
         }
     }

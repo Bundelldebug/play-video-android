@@ -153,6 +153,7 @@ final class VideoPlayer {
             if (p.getVideoHeight() > 0) videoH = p.getVideoHeight();
             loadTracks(p);
             AudioFx.attach(p.getAudioSessionId());
+            NpuAudio.attachLocalSession(app, p.getAudioSessionId());
             if (MainActivity.prefs(app).getBoolean("auto_resume", true)) {
                 long resume = VideoLibrary.getResume(current.key());
                 if (resume > 3000 && (durationMs <= 0 || resume < durationMs - 5000)) {

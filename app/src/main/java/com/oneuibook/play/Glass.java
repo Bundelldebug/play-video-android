@@ -2,7 +2,6 @@ package com.oneuibook.play;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RecordingCanvas;
@@ -278,7 +277,7 @@ final class Glass {
                     if (!b.isEmpty()) tmp.union(b);
                     if (!c.isEmpty()) tmp.union(c);
                     stroke.setStrokeWidth(Math.max(1.2f, Ui.dpf(1.1f)));
-                    stroke.setShader(new LinearGradient(0, tmp.top, 0, tmp.bottom,
+                    stroke.setShader(new android.graphics.LinearGradient(0, tmp.top, 0, tmp.bottom,
                             Ui.alpha(Ui.gOutlineTop(), alpha), 0x00FFFFFF, Shader.TileMode.CLAMP));
                     canvas.drawPath(path, stroke);
                     stroke.setShader(null);

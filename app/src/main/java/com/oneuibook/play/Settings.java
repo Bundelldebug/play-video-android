@@ -1,21 +1,26 @@
 package com.oneuibook.play;
 
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
 
-/** Settings screens: General, Appearance, Playback, Subtitles, AI Subtitles, Storage, About. */
+/**
+ * Settings screens (matching Prism 9.5.16 UI language):
+ * General, Appearance, Playback, Bit-Perfect Assist (NPU Audio), ProScaler Assist (NPU Video),
+ * Supported Chipsets (25 Flagship SoCs), Subtitles, AI Subtitles, Storage, About.
+ */
 final class Settings {
     private Settings() {}
 
@@ -45,8 +50,9 @@ final class Settings {
             app.row(Icons.SETTINGS, Ui.ACCENT, m.getString(R.string.set_general), null, true, v -> m.push(new GeneralPage(m)));
             app.row(Icons.APPEARANCE, Ui.ACCENT, m.getString(R.string.set_appearance), null, true, v -> m.push(new AppearancePage(m)));
             app.row(Icons.PLAY, Ui.ACCENT, m.getString(R.string.set_playback), null, true, v -> m.push(new PlaybackPage(m)));
-            app.row(Icons.AI, Ui.ACCENT, m.getString(R.string.npu_title), NpuEngine.summaryLabel(m), true,
-                    v -> NpuEngine.showSheet(m, m.header.pillInRoot(), m.playerOverlay.videoTexture()));
+            app.row(Icons.PROSCALER, Ui.ACCENT, m.getString(R.string.psa_title), NpuVideo.summary(m), true, v -> m.push(new ProScalerAssistPage(m)));
+            app.row(Icons.HEADPHONES, Ui.ACCENT, m.getString(R.string.bpa_title), NpuAudio.summary(m), true, v -> m.push(new BitPerfectAssistPage(m)));
+            app.row(Icons.YOUTUBE, 0xFFFF0033, m.getString(R.string.yt_title), m.getString(R.string.yt_source_settings), true, v -> YouTubeHub.showSourceSettingsSheet(m));
             app.row(Icons.SUBTITLE, Ui.ACCENT, m.getString(R.string.set_subtitles), null, true, v -> m.push(new SubtitleSettingsPage(m)));
             app.row(Icons.AI, Ui.ACCENT, m.getString(R.string.set_ai), engineLabel(m), true, v -> m.push(new AiSettingsPage(m)));
             app.row(Icons.STORAGE, Ui.ACCENT, m.getString(R.string.set_storage), null, true, v -> m.push(new StoragePage(m)));
@@ -82,30 +88,35 @@ final class Settings {
         @Override void build() {
             MainActivity m = main;
             SharedPreferences p = MainActivity.prefs(m);
-            Widgets.Group g = new Widgets.Group(m, null);
-            String lang = p.getString("lang", "system");
-            String langLbl = "ko".equals(lang) ? "한국어" : ("en".equals(lang) ? "English" : ("ja".equals(lang) ? "日本語" : m.getString(R.string.lang_system)));
-            g.row(Icons.GLOBE, Ui.ACCENT, m.getString(R.string.language), langLbl, true, v -> {
-                String[] keys = {"system", "ko", "en", "ja"};
-                String[] labels = {m.getString(R.string.lang_system), "한국어", "English", "日本語"};
-                int sel = "ko".equals(lang) ? 1 : ("en".equals(lang) ? 2 : ("ja".equals(lang) ? 3 : 0));
-                Widgets.pickSheet(m, v, m.getString(R.string.language), labels, sel, i -> {
-                    p.edit().putString("lang", keys[i]).apply();
+            String curLang = p.getString("lang", "system");
+            Widgets.Group lg = new Widgets.Group(m, m.getString(R.string.language));
+            String[][] langs = {
+                    {"system", m.getString(R.string.lang_system)},
+                    {"ko", "한국어"},
+                    {"en", "English"},
+                    {"ja", "日本語"}
+            };
+            for (String[] o : langs) {
+                lg.option(o[1], o[0].equals(curLang), v -> {
+                    p.edit().putString("lang", o[0]).apply();
                     m.recreate();
                 });
-            });
+            }
+            content.addView(lg, Widgets.MW);
 
             String uf = p.getString("unfold_ui", "fold");
-            g.row(Icons.SIDEBAR, Ui.ACCENT, m.getString(R.string.unfold_ui),
-                    m.getString("tablet".equals(uf) ? R.string.unfold_tablet : R.string.unfold_fold), true, v -> {
-                String[] keys = {"fold", "tablet"};
-                String[] labels = {m.getString(R.string.unfold_fold), m.getString(R.string.unfold_tablet)};
-                Widgets.pickSheet(m, v, m.getString(R.string.unfold_ui), labels, "tablet".equals(uf) ? 1 : 0, i -> {
-                    p.edit().putString("unfold_ui", keys[i]).apply();
+            Widgets.Group ufg = new Widgets.Group(m, m.getString(R.string.unfold_ui));
+            String[][] ufs = {
+                    {"fold", m.getString(R.string.unfold_fold)},
+                    {"tablet", m.getString(R.string.unfold_tablet)}
+            };
+            for (String[] o : ufs) {
+                ufg.option(o[1], o[0].equals(uf), v -> {
+                    p.edit().putString("unfold_ui", o[0]).apply();
                     m.recreate();
                 });
-            });
-            content.addView(g, Widgets.MW);
+            }
+            content.addView(ufg, Widgets.MW);
         }
     }
 
@@ -116,77 +127,117 @@ final class Settings {
         @Override void build() {
             MainActivity m = main;
             SharedPreferences p = MainActivity.prefs(m);
-            Widgets.Group g = new Widgets.Group(m, null);
 
+            // Theme option group
             String theme = p.getString("theme", "system");
-            String tLbl = "dark".equals(theme) ? m.getString(R.string.theme_dark)
-                    : ("light".equals(theme) ? m.getString(R.string.theme_light) : m.getString(R.string.theme_system));
-            g.row(Icons.APPEARANCE, Ui.ACCENT, m.getString(R.string.theme), tLbl, true, v -> {
-                String[] keys = {"system", "light", "dark"};
-                String[] labels = {m.getString(R.string.theme_system), m.getString(R.string.theme_light), m.getString(R.string.theme_dark)};
-                int sel = "light".equals(theme) ? 1 : ("dark".equals(theme) ? 2 : 0);
-                Widgets.pickSheet(m, v, m.getString(R.string.theme), labels, sel, i -> {
-                    p.edit().putString("theme", keys[i]).apply();
+            Widgets.Group tg = new Widgets.Group(m, m.getString(R.string.theme));
+            String[][] themes = {
+                    {"system", m.getString(R.string.theme_system)},
+                    {"light", m.getString(R.string.theme_light)},
+                    {"dark", m.getString(R.string.theme_dark)}
+            };
+            for (String[] o : themes) {
+                tg.option(o[1], o[0].equals(theme), v -> {
+                    p.edit().putString("theme", o[0]).apply();
                     m.recreate();
                 });
-            });
-
-            String style = p.getString("ui_style", "prism");
-            g.row(Icons.APPEARANCE, Ui.ACCENT, m.getString(R.string.style_title),
-                    m.getString("oneui".equals(style) ? R.string.style_g : R.string.style_a), true, v -> {
-                String[] keys = {"prism", "oneui"};
-                String[] labels = {m.getString(R.string.style_a), m.getString(R.string.style_g)};
-                Widgets.pickSheet(m, v, m.getString(R.string.style_title), labels, "oneui".equals(style) ? 1 : 0, i -> {
-                    p.edit().putString("ui_style", keys[i]).apply();
-                    m.recreate();
-                });
-            });
-
-            // Accent color picker swatches
-            LinearLayout swBox = new LinearLayout(m);
-            swBox.setOrientation(LinearLayout.VERTICAL);
-            swBox.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(14));
-            swBox.addView(Ui.text(m, m.getString(R.string.accent_color), 16, Ui.medium, Ui.text()));
-            LinearLayout row = new LinearLayout(m);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(0, Ui.dp(12), 0, Ui.dp(4));
-            String curAcc = Ui.accentKey(p);
-            for (int i = 0; i < Ui.ACCENT_KEYS.length; i++) {
-                final String key = Ui.ACCENT_KEYS[i];
-                int col = Ui.resolveAccent(m, key);
-                View dot = new View(m);
-                GradientDrawable gd = Ui.round(col, 100);
-                if (key.equals(curAcc)) gd.setStroke(Ui.dp(3), Ui.text());
-                dot.setBackground(gd);
-                LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(Ui.dp(30), Ui.dp(30));
-                dlp.rightMargin = Ui.dp(10);
-                dot.setOnClickListener(vv -> {
-                    p.edit().putString("accent_color", key).apply();
-                    m.recreate();
-                });
-                row.addView(dot, dlp);
             }
-            swBox.addView(row);
-            g.addCustom(swBox);
+            content.addView(tg, Widgets.MW);
+
+            // Interface style A / G option group
+            String style = p.getString("ui_style", "prism");
+            Widgets.Group sg = new Widgets.Group(m, m.getString(R.string.style_title));
+            String[][] styles = {
+                    {"prism", m.getString(R.string.style_a)},
+                    {"oneui", m.getString(R.string.style_g)}
+            };
+            for (String[] o : styles) {
+                sg.option(o[1], o[0].equals(style), v -> {
+                    p.edit().putString("ui_style", o[0]).apply();
+                    m.recreate();
+                });
+            }
+            content.addView(sg, Widgets.MW);
+
+            // 4x2 Ringed Accent Swatch Grid (matching Prism 9.5.16)
+            Widgets.Group cg = new Widgets.Group(m, m.getString(R.string.accent_color));
+            cg.addCustom(buildAccentPicker(m));
+            content.addView(cg, Widgets.MW);
 
             // Glass transparency slider
+            Widgets.Group glg = new Widgets.Group(m, null);
             LinearLayout glBox = new LinearLayout(m);
             glBox.setOrientation(LinearLayout.VERTICAL);
             glBox.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(10));
             TextView glVal = Ui.text(m, m.getString(R.string.glass_transparency) + " · " + Math.round(Ui.glassT * 100) + "%", 15, Ui.medium, Ui.text());
             glBox.addView(glVal);
-            Widgets.Slider glSlider = new Widgets.Slider(m, Ui.glassT);
-            glSlider.change = (val, u) -> {
-                Ui.glassT = val;
-                p.edit().putFloat("glass_t", val).apply();
-                glVal.setText(m.getString(R.string.glass_transparency) + " · " + Math.round(val * 100) + "%");
-                m.dock.invalidate();
-                m.header.invalidate();
-            };
+            Widgets.GlassSlider glSlider = new Widgets.GlassSlider(m, Ui.glassT, val -> {
+                float t = Math.abs(val - 0.5f) < 0.03f ? 0.5f : val;
+                Ui.glassT = t;
+                p.edit().putFloat("glass_t", t).apply();
+                glVal.setText(m.getString(R.string.glass_transparency) + " · " + Math.round(t * 100) + "%");
+                m.invalidateChrome();
+            });
             glBox.addView(glSlider);
-            g.addCustom(glBox);
+            glg.addCustom(glBox);
+            content.addView(glg, Widgets.MW);
+        }
 
-            content.addView(g, Widgets.MW);
+        private View buildAccentPicker(MainActivity m) {
+            SharedPreferences p = MainActivity.prefs(m);
+            String curKey = Ui.accentKey(p);
+            LinearLayout grid = new LinearLayout(m);
+            grid.setOrientation(LinearLayout.VERTICAL);
+            grid.setPadding(Ui.dp(10), Ui.dp(14), Ui.dp(10), Ui.dp(10));
+            int cols = 4;
+            LinearLayout row = null;
+            for (int i = 0; i < Ui.ACCENT_KEYS.length; i++) {
+                if (i % cols == 0) {
+                    row = new LinearLayout(m);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    if (i > 0) rlp.topMargin = Ui.dp(10);
+                    grid.addView(row, rlp);
+                }
+                final String key = Ui.ACCENT_KEYS[i];
+                final int color = Ui.resolveAccent(m, key);
+                final boolean sel = key.equals(curKey);
+                LinearLayout cell = new LinearLayout(m);
+                cell.setOrientation(LinearLayout.VERTICAL);
+                cell.setGravity(Gravity.CENTER_HORIZONTAL);
+                cell.setPadding(Ui.dp(2), Ui.dp(4), Ui.dp(2), Ui.dp(4));
+
+                FrameLayout ring = new FrameLayout(m);
+                if (sel) {
+                    GradientDrawable rg = Ui.round(0x00000000, 100);
+                    rg.setStroke(Ui.dp(2.2f), color);
+                    ring.setBackground(rg);
+                }
+                FrameLayout dot = new FrameLayout(m);
+                dot.setBackground(Ui.round(color, 100));
+                if (sel) {
+                    Icons.IconView ck = new Icons.IconView(m, Icons.CHECK, 18, 0xFFFFFFFF);
+                    dot.addView(ck, new FrameLayout.LayoutParams(Ui.dp(20), Ui.dp(20), Gravity.CENTER));
+                }
+                ring.addView(dot, new FrameLayout.LayoutParams(Ui.dp(36), Ui.dp(36), Gravity.CENTER));
+                cell.addView(ring, new LinearLayout.LayoutParams(Ui.dp(44), Ui.dp(44)));
+
+                TextView lbl = Ui.text(m, m.getString(Ui.ACCENT_LABELS[i]), 11.5f, sel ? Ui.semibold : Ui.regular, sel ? Ui.text() : Ui.text2());
+                lbl.setGravity(Gravity.CENTER);
+                LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                llp.topMargin = Ui.dp(4);
+                cell.addView(lbl, llp);
+
+                cell.setOnClickListener(v -> {
+                    if (key.equals(Ui.accentKey(p))) return;
+                    p.edit().putString("accent_color", key).apply();
+                    Ui.ACCENT = Ui.resolveAccent(m, key);
+                    m.refreshAppearance();
+                });
+                Ui.press(cell, 0.92f);
+                row.addView(cell, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            return grid;
         }
     }
 
@@ -228,11 +279,390 @@ final class Settings {
                     rebuild();
                 });
             });
-            g.row(Icons.AI, Ui.ACCENT, m.getString(R.string.npu_title), NpuEngine.summaryLabel(m), true,
-                    v -> NpuEngine.showSheet(m, m.header.pillInRoot(), m.playerOverlay.videoTexture()));
             g.row(Icons.EQ, Ui.ACCENT, m.getString(R.string.equalizer),
                     AudioFx.PRESET_NAMES[Math.max(0, Math.min(AudioFx.PRESET_NAMES.length - 1, AudioFx.presetIndex))],
                     true, v -> m.playerOverlay.showEqSheet(m.header.pillInRoot()));
+            content.addView(g, Widgets.MW);
+
+            // Bit-Perfect USB DAC output section
+            Widgets.Group bp = new Widgets.Group(m, m.getString(R.string.bp_group));
+            toggleRow(bp, Icons.DAC, m.getString(R.string.bp_title), BitPerfect.PREF, false, () -> {
+                if (!BitPerfect.enabled(m)) BitPerfect.clear(m);
+                m.root.postDelayed(() -> { if (isAttachedToWindow()) rebuild(); }, 350);
+            });
+            bp.row(0, 0, BitPerfect.status(m), null, false, null);
+            content.addView(bp, Widgets.MW);
+            content.addView(Widgets.caption(m, m.getString(R.string.bp_note)));
+
+            // NPU Assist shortcuts
+            Widgets.Group npu = new Widgets.Group(m, m.getString(R.string.npu_group));
+            npu.row(Icons.PROSCALER, Ui.ACCENT, m.getString(R.string.psa_title), NpuVideo.summary(m), true, v -> m.push(new ProScalerAssistPage(m)));
+            npu.row(Icons.HEADPHONES, Ui.ACCENT, m.getString(R.string.bpa_title), NpuAudio.summary(m), true, v -> m.push(new BitPerfectAssistPage(m)));
+            content.addView(npu, Widgets.MW);
+        }
+    }
+
+    // ------------------------------------------------------------------ Bit-Perfect Assist (NPU Audio Tuning)
+    static final class BitPerfectAssistPage extends Sub {
+        BitPerfectAssistPage(MainActivity m) { super(m, R.string.bpa_title); }
+
+        @Override void build() {
+            MainActivity m = main;
+            boolean supported = NpuAudio.isSupported();
+            boolean active = NpuAudio.enabled(m);
+
+            // 1) Current chipset illustration hero card + master toggle
+            Widgets.Group mg = new Widgets.Group(m, m.getString(R.string.npu_group));
+            LinearLayout hero = new LinearLayout(m);
+            hero.setOrientation(LinearLayout.HORIZONTAL);
+            hero.setGravity(Gravity.CENTER_VERTICAL);
+            hero.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), Ui.dp(14));
+            NpuAudio.ChipSpec curChip = NpuAudio.currentChipSpec();
+            hero.addView(new NpuAudio.ChipArtView(m, curChip, NpuAudio.displaySoc(m)), new LinearLayout.LayoutParams(Ui.dp(62), Ui.dp(62)));
+            LinearLayout hcol = new LinearLayout(m);
+            hcol.setOrientation(LinearLayout.VERTICAL);
+            hcol.setPadding(Ui.dp(14), 0, 0, 0);
+            hcol.addView(Ui.text(m, NpuAudio.displaySoc(m), 16.5f, Ui.bold, Ui.text()), Widgets.MW);
+            TextView stTv = Ui.text(m, NpuAudio.status(m), 12.5f, Ui.regular, supported ? Ui.ACCENT : Ui.text2());
+            stTv.setSingleLine(false);
+            LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stLp.topMargin = Ui.dp(3);
+            hcol.addView(stTv, stLp);
+            hero.addView(hcol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            mg.addCustom(hero);
+
+            if (supported) {
+                toggleRow(mg, Icons.HEADPHONES, m.getString(R.string.bpa_title), NpuAudio.PREF_ON, false, () -> {
+                    NpuAudio.apply(m);
+                    VideoPlayer.notifyAll0();
+                    m.root.postDelayed(() -> { if (isAttachedToWindow()) rebuild(); }, 350);
+                });
+            } else {
+                View r = mg.row(Icons.HEADPHONES, Ui.text3(), m.getString(R.string.bpa_title), m.getString(R.string.eq_state_off), false, null);
+                r.setAlpha(0.55f);
+            }
+            mg.row(Icons.INFO, Ui.ACCENT, m.getString(R.string.bpa_supported_socs), m.getString(R.string.bpa_supported_socs_sub), true, v -> m.push(new SupportedChipsetsPage(m)));
+            content.addView(mg, Widgets.MW);
+
+            // 2) Live output audio & Hi-Res tier card
+            AudioInfo.OutputSpec spec = AudioInfo.current(m);
+            int tier = AudioInfo.hiResTier(m, spec);
+            Widgets.Group og = new Widgets.Group(m, m.getString(R.string.bpa_output));
+            String outLabel = spec.deviceName.isEmpty() ? m.getString(R.string.this_device) : spec.deviceName;
+            String outVal = spec.formatLine().isEmpty() ? (spec.bits + "bit / " + spec.khzText()) : spec.formatLine();
+            og.row(AudioInfo.deviceIcon(spec), Ui.ACCENT, outLabel, outVal, false, null);
+            int tierRes = tier == AudioInfo.TIER_MASTER ? R.string.hires_master
+                    : (tier == AudioInfo.TIER_BLUE ? R.string.hires_blue
+                    : (tier == AudioInfo.TIER_GOLD ? R.string.hires_active : R.string.hires_none));
+            int tierColor = tier == AudioInfo.TIER_MASTER ? 0xFFA855F7
+                    : (tier == AudioInfo.TIER_BLUE ? 0xFF38BDF8
+                    : (tier == AudioInfo.TIER_GOLD ? 0xFFD4A017 : Ui.text2()));
+            og.row(Icons.WAVE, tierColor, m.getString(R.string.bpa_hires_state), m.getString(tierRes), false, null);
+            toggleRow(og, Icons.APPEARANCE, m.getString(R.string.bpa_hires_glow), NpuAudio.PREF_HIRES_GLOW, true, VideoPlayer::notifyAll0);
+            content.addView(og, Widgets.MW);
+            content.addView(Widgets.caption(m, m.getString(R.string.bpa_hires_glow_note)));
+
+            // 3) Live frequency response curve + Instant A/B Bypass comparison button
+            NpuAudio.CurveView curveView = new NpuAudio.CurveView(m);
+            Widgets.Group cg = new Widgets.Group(m, m.getString(R.string.bpa_curve));
+            cg.addCustom(curveView);
+            if (supported && active) {
+                TextView abBtn = Ui.text(m, m.getString(R.string.bpa_ab_hold), 13.5f, Ui.semibold, Ui.ACCENT);
+                abBtn.setClickable(true);
+                abBtn.setGravity(Gravity.CENTER);
+                abBtn.setPadding(Ui.dp(14), Ui.dp(13), Ui.dp(14), Ui.dp(13));
+                abBtn.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 14));
+                LinearLayout.LayoutParams abLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                abLp.setMargins(Ui.dp(14), Ui.dp(4), Ui.dp(14), Ui.dp(14));
+                abBtn.setOnTouchListener((v, ev) -> {
+                    int act = ev.getActionMasked();
+                    if (act == MotionEvent.ACTION_DOWN) {
+                        if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                        NpuAudio.setBypassHold(m, true);
+                        abBtn.setText(R.string.bpa_ab_bypassing);
+                        abBtn.setBackground(Ui.round(Ui.alpha(0xFFFF9F0A, 0.28f), 14));
+                        abBtn.setTextColor(0xFFFF9F0A);
+                        stTv.setText(NpuAudio.status(m));
+                        curveView.invalidate();
+                        return true;
+                    } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                        if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(false);
+                        NpuAudio.setBypassHold(m, false);
+                        abBtn.setText(R.string.bpa_ab_hold);
+                        abBtn.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 14));
+                        abBtn.setTextColor(Ui.ACCENT);
+                        stTv.setText(NpuAudio.status(m));
+                        curveView.invalidate();
+                        return true;
+                    }
+                    return true;
+                });
+                cg.addCustom(abBtn);
+                abBtn.setLayoutParams(abLp);
+            }
+            content.addView(cg, Widgets.MW);
+
+            // 4) Curated profiles
+            Widgets.Group pg = new Widgets.Group(m, m.getString(R.string.bpa_profile));
+            String curProf = NpuAudio.profile(m);
+            for (int i = 0; i < NpuAudio.PROFILES.length; i++) {
+                final int idx = i;
+                View row = pg.option(m.getString(NpuAudio.PROFILE_NAMES[i]), NpuAudio.PROFILES[i].equals(curProf), supported ? v -> {
+                    NpuAudio.setProfile(m, idx);
+                    if (!NpuAudio.enabled(m)) NpuAudio.setEnabled(m, true);
+                    rebuild();
+                } : null);
+                if (!supported) row.setAlpha(0.5f);
+            }
+            if ("custom".equals(curProf)) pg.option(m.getString(R.string.bpa_prof_custom), true, null);
+            content.addView(pg, Widgets.MW);
+
+            // 5) Harmonic exciter voicing selector (Studio / Crystal / Warm Tube)
+            Widgets.Group hg = new Widgets.Group(m, m.getString(R.string.bpa_harmonics));
+            String curH = NpuAudio.harmonics(m);
+            for (int i = 0; i < NpuAudio.HARMONICS.length; i++) {
+                final String mode = NpuAudio.HARMONICS[i];
+                View row = hg.option(m.getString(NpuAudio.HARMONIC_NAMES[i]), mode.equals(curH), (supported && active) ? v -> {
+                    NpuAudio.setHarmonics(m, mode);
+                    rebuild();
+                } : null);
+                if (!supported || !active) row.setAlpha(0.5f);
+            }
+            content.addView(hg, Widgets.MW);
+
+            // 6) Detailed real-time tuning sliders (6 bands + limiter + per-device memory)
+            Widgets.Group tg = new Widgets.Group(m, m.getString(R.string.bpa_tuning));
+            addAudioSlider(tg, m, R.string.bpa_strength, NpuAudio.PREF_STRENGTH, NpuAudio.strength(m), supported && active, curveView);
+            addAudioSlider(tg, m, R.string.bpa_air, NpuAudio.PREF_AIR, NpuAudio.air(m), supported && active, curveView);
+            addAudioSlider(tg, m, R.string.bpa_dyn, NpuAudio.PREF_DYN, NpuAudio.dyn(m), supported && active, curveView);
+            addAudioSlider(tg, m, R.string.bpa_vocal, NpuAudio.PREF_VOCAL, NpuAudio.vocal(m), supported && active, curveView);
+            addAudioSlider(tg, m, R.string.bpa_bass, NpuAudio.PREF_BASS, NpuAudio.bass(m), supported && active, curveView);
+            addAudioSlider(tg, m, R.string.bpa_space, NpuAudio.PREF_SPACE, NpuAudio.space(m), supported && active, curveView);
+            if (supported) {
+                toggleRow(tg, Icons.WAVE, m.getString(R.string.bpa_limiter), NpuAudio.PREF_LIMITER, true, () -> NpuAudio.apply(m, true));
+                toggleRow(tg, Icons.DEVICE, m.getString(R.string.bpa_per_device), NpuAudio.PREF_PER_DEVICE, true, null);
+            }
+            content.addView(tg, Widgets.MW);
+            content.addView(Widgets.caption(m, m.getString(R.string.npu_note)));
+        }
+
+        private void addAudioSlider(Widgets.Group g, MainActivity m, int titleRes, String key, int curPct, boolean interactive, NpuAudio.CurveView curve) {
+            LinearLayout box = new LinearLayout(m);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(Ui.dp(18), Ui.dp(12), Ui.dp(18), Ui.dp(8));
+            TextView tv = Ui.text(m, m.getString(titleRes) + " · " + curPct + "%", 14.5f, Ui.medium, Ui.text());
+            box.addView(tv);
+            Widgets.GlassSlider sl = new Widgets.GlassSlider(m, curPct / 100f, v -> {
+                if (!interactive) return;
+                int pct = Math.round(v * 100f);
+                NpuAudio.setParam(m, key, pct);
+                tv.setText(m.getString(titleRes) + " · " + pct + "%");
+                if (curve != null) curve.invalidate();
+            });
+            if (!interactive) {
+                box.setAlpha(0.5f);
+                sl.setEnabled(false);
+            }
+            box.addView(sl);
+            g.addCustom(box);
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            NpuAudio.setBypassHold(main, false);
+        }
+    }
+
+    // ------------------------------------------------------------------ ProScaler Assist (NPU Video Super-Resolution & HDR Tone Enhancement)
+    static final class ProScalerAssistPage extends Sub {
+        ProScalerAssistPage(MainActivity m) { super(m, R.string.psa_title); }
+
+        @Override void build() {
+            MainActivity m = main;
+            boolean supported = NpuVideo.isSupported();
+            boolean active = NpuVideo.enabled(m);
+
+            // 1) Current chipset illustration hero card + master toggle
+            Widgets.Group mg = new Widgets.Group(m, m.getString(R.string.npu_group));
+            LinearLayout hero = new LinearLayout(m);
+            hero.setOrientation(LinearLayout.HORIZONTAL);
+            hero.setGravity(Gravity.CENTER_VERTICAL);
+            hero.setPadding(Ui.dp(16), Ui.dp(14), Ui.dp(16), Ui.dp(14));
+            NpuAudio.ChipSpec curChip = NpuAudio.currentChipSpec();
+            hero.addView(new NpuAudio.ChipArtView(m, curChip, NpuAudio.displaySoc(m)), new LinearLayout.LayoutParams(Ui.dp(62), Ui.dp(62)));
+            LinearLayout hcol = new LinearLayout(m);
+            hcol.setOrientation(LinearLayout.VERTICAL);
+            hcol.setPadding(Ui.dp(14), 0, 0, 0);
+            hcol.addView(Ui.text(m, NpuAudio.displaySoc(m), 16.5f, Ui.bold, Ui.text()), Widgets.MW);
+            TextView stTv = Ui.text(m, NpuVideo.status(m), 12.5f, Ui.regular, supported ? Ui.ACCENT : Ui.text2());
+            stTv.setSingleLine(false);
+            LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stLp.topMargin = Ui.dp(3);
+            hcol.addView(stTv, stLp);
+            hero.addView(hcol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            mg.addCustom(hero);
+
+            if (supported) {
+                toggleRow(mg, Icons.PROSCALER, m.getString(R.string.psa_enable), NpuVideo.PREF_ON, false, () -> {
+                    NpuVideo.apply(m, m.playerOverlay.videoTexture());
+                    m.root.postDelayed(() -> { if (isAttachedToWindow()) rebuild(); }, 350);
+                });
+            } else {
+                View r = mg.row(Icons.PROSCALER, Ui.text3(), m.getString(R.string.psa_enable), m.getString(R.string.eq_state_off), false, null);
+                r.setAlpha(0.55f);
+            }
+            mg.row(Icons.INFO, Ui.ACCENT, m.getString(R.string.bpa_supported_socs), m.getString(R.string.bpa_supported_socs_sub), true, v -> m.push(new SupportedChipsetsPage(m)));
+            content.addView(mg, Widgets.MW);
+
+            // 2) Live Luma & Chroma response curve + Instant A/B Bypass hold button
+            NpuVideo.ScalerCurveView curveView = new NpuVideo.ScalerCurveView(m);
+            Widgets.Group cg = new Widgets.Group(m, m.getString(R.string.psa_curve));
+            cg.addCustom(curveView);
+            if (supported && active) {
+                TextView abBtn = Ui.text(m, m.getString(R.string.psa_ab_hold), 13.5f, Ui.semibold, Ui.ACCENT);
+                abBtn.setClickable(true);
+                abBtn.setGravity(Gravity.CENTER);
+                abBtn.setPadding(Ui.dp(14), Ui.dp(13), Ui.dp(14), Ui.dp(13));
+                abBtn.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 14));
+                LinearLayout.LayoutParams abLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                abLp.setMargins(Ui.dp(14), Ui.dp(4), Ui.dp(14), Ui.dp(14));
+                abBtn.setOnTouchListener((v, ev) -> {
+                    int act = ev.getActionMasked();
+                    if (act == MotionEvent.ACTION_DOWN) {
+                        if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
+                        NpuVideo.setBypassHold(m, true);
+                        abBtn.setText(R.string.psa_ab_bypassing);
+                        abBtn.setBackground(Ui.round(Ui.alpha(0xFFFF9F0A, 0.28f), 14));
+                        abBtn.setTextColor(0xFFFF9F0A);
+                        stTv.setText(NpuVideo.status(m));
+                        curveView.invalidate();
+                        return true;
+                    } else if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                        if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(false);
+                        NpuVideo.setBypassHold(m, false);
+                        abBtn.setText(R.string.psa_ab_hold);
+                        abBtn.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 14));
+                        abBtn.setTextColor(Ui.ACCENT);
+                        stTv.setText(NpuVideo.status(m));
+                        curveView.invalidate();
+                        return true;
+                    }
+                    return true;
+                });
+                cg.addCustom(abBtn);
+                abBtn.setLayoutParams(abLp);
+            }
+            content.addView(cg, Widgets.MW);
+
+            // 3) Target NPU Engine Mode selector (Detail 4K / HDR Dynamic / Film Soft)
+            Widgets.Group rg = new Widgets.Group(m, m.getString(R.string.psa_engine));
+            String curEng = NpuVideo.engine(m);
+            for (int i = 0; i < NpuVideo.ENGINES.length; i++) {
+                final String mode = NpuVideo.ENGINES[i];
+                View row = rg.option(m.getString(NpuVideo.ENGINE_NAMES[i]), mode.equals(curEng), (supported && active) ? v -> {
+                    NpuVideo.setEngine(m, mode);
+                    rebuild();
+                } : null);
+                if (!supported || !active) row.setAlpha(0.5f);
+            }
+            content.addView(rg, Widgets.MW);
+
+            // 4) Curated video profiles (Cinema Master / Crystal 4K / Anime & Line / Natural Film)
+            Widgets.Group pg = new Widgets.Group(m, m.getString(R.string.psa_profile));
+            String curProf = NpuVideo.profile(m);
+            for (int i = 0; i < NpuVideo.PROFILES.length; i++) {
+                final int idx = i;
+                View row = pg.option(m.getString(NpuVideo.PROFILE_NAMES[i]), NpuVideo.PROFILES[i].equals(curProf), supported ? v -> {
+                    NpuVideo.setProfile(m, idx);
+                    if (!NpuVideo.enabled(m)) NpuVideo.setEnabled(m, true);
+                    rebuild();
+                } : null);
+                if (!supported) row.setAlpha(0.5f);
+            }
+            if ("custom".equals(curProf)) pg.option(m.getString(R.string.psa_prof_custom), true, null);
+            content.addView(pg, Widgets.MW);
+
+            // 5) Detailed NPU video tuning sliders (Strength, Detail, Contrast, HDR, Vibrance, Deband)
+            Widgets.Group tg = new Widgets.Group(m, m.getString(R.string.psa_tuning));
+            addVideoSlider(tg, m, R.string.psa_strength, NpuVideo.PREF_STRENGTH, NpuVideo.strength(m), supported && active, curveView);
+            addVideoSlider(tg, m, R.string.psa_detail, NpuVideo.PREF_DETAIL, NpuVideo.detail(m), supported && active, curveView);
+            addVideoSlider(tg, m, R.string.psa_contrast, NpuVideo.PREF_CONTRAST, NpuVideo.contrast(m), supported && active, curveView);
+            addVideoSlider(tg, m, R.string.psa_hdr, NpuVideo.PREF_HDR, NpuVideo.hdr(m), supported && active, curveView);
+            addVideoSlider(tg, m, R.string.psa_vibrance, NpuVideo.PREF_VIBRANCE, NpuVideo.vibrance(m), supported && active, curveView);
+            addVideoSlider(tg, m, R.string.psa_deband, NpuVideo.PREF_DEBAND, NpuVideo.deband(m), supported && active, curveView);
+            content.addView(tg, Widgets.MW);
+            content.addView(Widgets.caption(m, m.getString(R.string.psa_note)));
+        }
+
+        private void addVideoSlider(Widgets.Group g, MainActivity m, int titleRes, String key, int curPct, boolean interactive, NpuVideo.ScalerCurveView curve) {
+            LinearLayout box = new LinearLayout(m);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(Ui.dp(18), Ui.dp(12), Ui.dp(18), Ui.dp(8));
+            TextView tv = Ui.text(m, m.getString(titleRes) + " · " + curPct + "%", 14.5f, Ui.medium, Ui.text());
+            box.addView(tv);
+            Widgets.GlassSlider sl = new Widgets.GlassSlider(m, curPct / 100f, v -> {
+                if (!interactive) return;
+                int pct = Math.round(v * 100f);
+                NpuVideo.setParam(m, key, pct);
+                tv.setText(m.getString(titleRes) + " · " + pct + "%");
+                if (curve != null) curve.invalidate();
+            });
+            if (!interactive) {
+                box.setAlpha(0.5f);
+                sl.setEnabled(false);
+            }
+            box.addView(sl);
+            g.addCustom(box);
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            NpuVideo.setBypassHold(main, false);
+        }
+    }
+
+    // ------------------------------------------------------------------ Supported Chipsets (25 Flagship SoCs)
+    static final class SupportedChipsetsPage extends Sub {
+        SupportedChipsetsPage(MainActivity m) { super(m, R.string.bpa_supported_socs); }
+
+        @Override void build() {
+            MainActivity m = main;
+            NpuAudio.ChipSpec current = NpuAudio.currentChipSpec();
+            addVendorGroup(m, "Qualcomm Snapdragon", NpuAudio.VENDOR_QUALCOMM, current);
+            addVendorGroup(m, "MediaTek Dimensity", NpuAudio.VENDOR_MEDIATEK, current);
+            addVendorGroup(m, "Samsung Exynos", NpuAudio.VENDOR_SAMSUNG, current);
+            addVendorGroup(m, "Google Tensor", NpuAudio.VENDOR_GOOGLE, current);
+        }
+
+        private void addVendorGroup(MainActivity m, String title, int vendor, NpuAudio.ChipSpec current) {
+            Widgets.Group g = new Widgets.Group(m, title);
+            for (NpuAudio.ChipSpec cs : NpuAudio.SUPPORTED_CHIPS) {
+                if (cs.vendor != vendor) continue;
+                LinearLayout row = new LinearLayout(m);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(16), Ui.dp(10));
+                boolean showArt = cs.drawableRes != 0 || !"S5E9975".equals(cs.id);
+                if (showArt) {
+                    row.addView(new NpuAudio.ChipArtView(m, cs, cs.id), new LinearLayout.LayoutParams(Ui.dp(50), Ui.dp(50)));
+                }
+                LinearLayout col = new LinearLayout(m);
+                col.setOrientation(LinearLayout.VERTICAL);
+                col.setPadding(showArt ? Ui.dp(12) : Ui.dp(2), 0, Ui.dp(8), 0);
+                col.addView(Ui.text(m, cs.displayName(m), 15f, Ui.semibold, Ui.text()), Widgets.MW);
+                TextView sub = Ui.text(m, cs.id + " · " + cs.npu, 12f, Ui.regular, Ui.text2());
+                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                slp.topMargin = Ui.dp(2);
+                col.addView(sub, slp);
+                row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                if (current != null && current.id.equals(cs.id)) {
+                    TextView tag = Ui.text(m, m.getString(R.string.bpa_current_device), 11.5f, Ui.semibold, Ui.ACCENT);
+                    tag.setPadding(Ui.dp(9), Ui.dp(4), Ui.dp(9), Ui.dp(4));
+                    tag.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 100));
+                    row.addView(tag, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                }
+                g.addCustom(row);
+            }
             content.addView(g, Widgets.MW);
         }
     }
@@ -252,12 +682,11 @@ final class Settings {
             szBox.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(10));
             TextView szVal = Ui.text(m, "글자 크기 · " + Math.round(Subtitle.textSizeSp) + "sp", 15, Ui.medium, Ui.text());
             szBox.addView(szVal);
-            Widgets.Slider szSlider = new Widgets.Slider(m, (Subtitle.textSizeSp - 12f) / 28f);
-            szSlider.change = (val, u) -> {
+            Widgets.GlassSlider szSlider = new Widgets.GlassSlider(m, (Subtitle.textSizeSp - 12f) / 28f, val -> {
                 Subtitle.textSizeSp = 12f + val * 28f;
                 Subtitle.saveStyle(p);
                 szVal.setText("글자 크기 · " + Math.round(Subtitle.textSizeSp) + "sp");
-            };
+            });
             szBox.addView(szSlider);
             g.addCustom(szBox);
 
@@ -266,12 +695,11 @@ final class Settings {
             bgBox.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(10));
             TextView bgVal = Ui.text(m, "자막 배경 불투명도 · " + Math.round(Subtitle.bgAlpha * 100) + "%", 15, Ui.medium, Ui.text());
             bgBox.addView(bgVal);
-            Widgets.Slider bgSlider = new Widgets.Slider(m, Subtitle.bgAlpha);
-            bgSlider.change = (val, u) -> {
+            Widgets.GlassSlider bgSlider = new Widgets.GlassSlider(m, Subtitle.bgAlpha, val -> {
                 Subtitle.bgAlpha = val;
                 Subtitle.saveStyle(p);
                 bgVal.setText("자막 배경 불투명도 · " + Math.round(val * 100) + "%");
-            };
+            });
             bgBox.addView(bgSlider);
             g.addCustom(bgBox);
             content.addView(g, Widgets.MW);
@@ -414,7 +842,7 @@ final class Settings {
             MainActivity m = main;
             Widgets.Group g = new Widgets.Group(m, null);
             g.row(Icons.VIDEO, Ui.ACCENT, m.getString(R.string.app_name), "버전 " + MainActivity.VERSION, false, null);
-            g.row(Icons.REFRESH, Ui.ACCENT, m.getString(R.string.upd_check), null, true, v -> {
+            g.row(Icons.DOWNLOAD, Ui.ACCENT, m.getString(R.string.upd_check), MainActivity.VERSION, true, v -> {
                 Toast.makeText(m, R.string.upd_checking, Toast.LENGTH_SHORT).show();
                 Updater.check((rel, err) -> {
                     if (m.isFinishing() || m.isDestroyed()) return;
@@ -424,6 +852,8 @@ final class Settings {
                 });
             });
             toggleRow(g, Icons.CLOCK, m.getString(R.string.upd_auto), Updater.PREF_AUTO, true, null);
+            g.row(Icons.PROSCALER, Ui.ACCENT, m.getString(R.string.psa_title), NpuAudio.displaySoc(m), true, v -> m.push(new ProScalerAssistPage(m)));
+            g.row(Icons.HEADPHONES, Ui.ACCENT, m.getString(R.string.bpa_title), NpuAudio.displaySoc(m), true, v -> m.push(new BitPerfectAssistPage(m)));
             g.row(Icons.SUBTITLE, Ui.ACCENT, "지원 자막 포맷", "SRT · VTT · ASS · SSA · SMI", false, null);
             g.row(Icons.AI, Ui.ACCENT, "AI 자막 엔진", "Gemini · OpenAI · Groq · Custom", false, null);
             content.addView(g, Widgets.MW);

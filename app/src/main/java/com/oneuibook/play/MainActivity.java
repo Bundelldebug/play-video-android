@@ -35,7 +35,7 @@ import java.util.Locale;
  * in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.4";
+    static final String VERSION = "9.5.5";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;
@@ -80,7 +80,8 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         Ui.init(this, p);
         Subtitle.loadStyle(p);
         AudioFx.init(this);
-        NpuEngine.init(this);
+        AudioInfo.init(this);
+        NpuAudio.apply(this);
         VideoLibrary.init(this);
         VideoPlayer.app = getApplicationContext();
 
@@ -196,9 +197,22 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     private void handleIntent(Intent intent) {
         if (intent == null) return;
-        if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+        String action = intent.getAction();
+        if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+            String u = intent.getData().toString();
+            String ytId = YouTubeHub.extractVideoId(u);
+            if (ytId != null) {
+                YouTubeHub.openVideo(this, new YouTubeHub.YtVideo(ytId, "YouTube (" + ytId + ")", "YouTube"));
+                return;
+            }
             VideoLibrary.Video v = VideoLibrary.fromUri(this, intent.getData());
             playVideo(v, null);
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            String txt = intent.getStringExtra(Intent.EXTRA_TEXT);
+            String ytId = YouTubeHub.extractVideoId(txt);
+            if (ytId != null) {
+                YouTubeHub.openVideo(this, new YouTubeHub.YtVideo(ytId, "YouTube (" + ytId + ")", "YouTube"));
+            }
         }
     }
 
@@ -357,8 +371,23 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             case "favorites": push(new Pages.VideoListPage(this, getString(R.string.favorites), "favorites")); break;
             case "playlists": push(new Pages.PlaylistsPage(this)); break;
             case "streams": push(new Pages.VideoListPage(this, getString(R.string.network_streams), "streams")); break;
+            case "youtube": push(new YouTubeHub.YouTubePage(this)); break;
             case "ai_subs": push(new Pages.AiSubtitlesPage(this)); break;
         }
+    }
+
+    void refreshAppearance() {
+        getWindow().getDecorView().setBackgroundColor(Ui.bg());
+        backdrop.setBackgroundColor(Ui.bg());
+        setLightStatus(!Ui.dark);
+        reloadAll();
+        invalidateChrome();
+    }
+
+    void invalidateChrome() {
+        if (header != null) header.invalidate();
+        if (dock != null) { dock.requestLayout(); dock.invalidate(); }
+        if (sidebar != null) sidebar.invalidate();
     }
 
     void push(Page page) {
@@ -460,6 +489,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             List<GlassMenu.Entry> es = new ArrayList<>();
             es.add(new GlassMenu.Entry(getString(R.string.open_file), Icons.FOLDER, false, this::pickVideoFile));
             es.add(new GlassMenu.Entry(getString(R.string.open_url), Icons.LINK, false, () -> Pages.openStreamDialog(this)));
+            es.add(new GlassMenu.Entry(getString(R.string.yt_title), Icons.YOUTUBE, false, () -> openLibrarySection("youtube")));
             es.add(new GlassMenu.Entry(getString(R.string.new_playlist), Icons.PLAYLIST, false, () -> Pages.createPlaylistDialog(this, null)));
             GlassMenu.show(this, anchor, es);
         } else if (icon == Icons.REFRESH) {
@@ -485,6 +515,14 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             cur.headerIcons = new int[]{Icons.SORT, VideoLibrary.gridMode ? Icons.LIST : Icons.GRID};
             cur.rebuild();
             syncHeader();
+        } else if (icon == Icons.SETTINGS) {
+            Page cur = currentPage();
+            if (cur instanceof YouTubeHub.YouTubePage) {
+                YouTubeHub.showSourceSettingsSheet(this);
+                return;
+            }
+            dock.select(3, true);
+            onTab(3, false);
         } else if (icon == Icons.MORE) {
             List<GlassMenu.Entry> es = new ArrayList<>();
             es.add(new GlassMenu.Entry(getString(R.string.rescan), Icons.REFRESH, false, this::rescanLibrary));
@@ -501,6 +539,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     @Override public void onBackPressed() {
         if (GlassMenu.dismissAny(root)) return;
+        if (YouTubeHub.dismissOverlay(root)) return;
         if (playerOverlay.isOpen()) { playerOverlay.close(); return; }
         if (searchPage != null && searchPage.getVisibility() == View.VISIBLE) { onExitSearch(); return; }
         if (tabs[tab].canPop()) { tabs[tab].pop(); syncHeader(); return; }

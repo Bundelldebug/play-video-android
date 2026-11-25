@@ -486,7 +486,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         setChromeVisible(true);
         updatePlaybackUi();
         applyVideoTransform();
-        NpuEngine.applyToVideoView(m, texture);
+        NpuVideo.apply(m, texture);
         h.removeCallbacks(uiTick);
         h.post(uiTick);
     }
@@ -673,7 +673,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         super.onSizeChanged(w, h0, ow, oh);
         adaptLayoutForSize(w, h0);
         applyVideoTransform();
-        NpuEngine.applyToVideoView(m, texture);
+        NpuVideo.apply(m, texture);
     }
 
     // ---- TextureView.SurfaceTextureListener ----
@@ -1023,9 +1023,14 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     private void showAudioMenu(View anchor) {
         List<GlassMenu.Entry> es = new ArrayList<>();
-        es.add(new GlassMenu.Entry(m.getString(R.string.npu_title) + " (" + NpuEngine.summaryLabel(m) + ")",
-                Icons.AI, NpuEngine.superResMode != NpuEngine.MODE_OFF || NpuEngine.voiceIsolation,
-                () -> NpuEngine.showSheet(m, anchorOf(anchor), texture)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.bpa_title) + " (" + NpuAudio.summary(m) + ")",
+                Icons.HEADPHONES, NpuAudio.enabled(m), () -> {
+            close();
+            m.push(new Settings.BitPerfectAssistPage(m));
+        }));
+        es.add(new GlassMenu.Entry(m.getString(R.string.psa_title) + " (" + NpuVideo.summary(m) + ")",
+                Icons.PROSCALER, NpuVideo.enabled(m),
+                () -> NpuVideo.showQuickSheet(m, anchorOf(anchor), texture)));
         es.add(new GlassMenu.Entry(m.getString(R.string.equalizer), Icons.EQ, false, () -> showEqSheet(anchorOf(anchor))));
         for (VideoPlayer.TrackItem tr : VideoPlayer.audioTracks) {
             GlassMenu.Entry e = new GlassMenu.Entry(tr.label, Icons.AUDIO, tr.index == VideoPlayer.selectedAudioTrack,
@@ -1088,9 +1093,14 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     private void showMoreMenu(View anchor) {
         List<GlassMenu.Entry> es = new ArrayList<>();
-        es.add(new GlassMenu.Entry(m.getString(R.string.npu_title), Icons.AI,
-                NpuEngine.superResMode != NpuEngine.MODE_OFF || NpuEngine.voiceIsolation,
-                () -> NpuEngine.showSheet(m, anchorOf(anchor), texture)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.psa_title) + " (" + NpuVideo.summary(m) + ")",
+                Icons.PROSCALER, NpuVideo.enabled(m),
+                () -> NpuVideo.showQuickSheet(m, anchorOf(anchor), texture)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.bpa_title) + " (" + NpuAudio.summary(m) + ")",
+                Icons.HEADPHONES, NpuAudio.enabled(m), () -> {
+            close();
+            m.push(new Settings.BitPerfectAssistPage(m));
+        }));
         es.add(new GlassMenu.Entry(m.getString(R.string.sub_web_search), Icons.GLOBE, false,
                 () -> OnlineSubtitle.showSearchSheet(m, VideoPlayer.current, false)));
         es.add(new GlassMenu.Entry(m.getString(R.string.sub_ai_generate), Icons.SUBTITLE, false, this::startAiSubtitle));

@@ -123,11 +123,32 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.4", MainActivity.VERSION);
+        assertEquals("9.5.5", MainActivity.VERSION);
         assertEquals("Interstellar 2014", OnlineSubtitle.cleanQuery("[Sub] Interstellar.2014.2160p.4K.UHD.BluRay.x265.mkv"));
-        NpuEngine.HwInfo hw = NpuEngine.detect(act);
-        assertNotNull(hw.npuName);
+        assertEquals(25, NpuAudio.SUPPORTED_CHIPS.length);
+        assertNotNull(NpuAudio.displaySoc(act));
+        assertEquals(12, NpuAudio.computeBandGains(act).length);
+        assertEquals(12, NpuVideo.computeResponseCurve(act).length);
+        assertEquals("dQw4w9WgXcQ", YouTubeHub.extractVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+        assertEquals("dQw4w9WgXcQ", YouTubeHub.extractVideoId("https://youtu.be/dQw4w9WgXcQ?t=42"));
         saveShot(act.root, 1236, 2745, "phone-home-light.png");
+
+        // Open Bit-Perfect Assist & ProScaler Assist pages and capture screenshots
+        NpuAudio.testSupportedOverride = true;
+        NpuAudio.setEnabled(act, true);
+        NpuVideo.setEnabled(act, true);
+        Settings.BitPerfectAssistPage bpaPage = new Settings.BitPerfectAssistPage(act);
+        bpaPage.show();
+        saveShot(bpaPage, 1236, 2745, "phone-bitperfect-assist.png");
+
+        Settings.ProScalerAssistPage psaPage = new Settings.ProScalerAssistPage(act);
+        psaPage.show();
+        saveShot(psaPage, 1236, 2745, "phone-proscaler-assist.png");
+
+        YouTubeHub.YouTubePage ytPage = new YouTubeHub.YouTubePage(act);
+        ytPage.show();
+        saveShot(ytPage, 1236, 2745, "phone-youtube-hub.png");
+        NpuAudio.testSupportedOverride = null;
 
         // Collapsed dock with mini video player tucked between tab circle and search circle
         VideoPlayer.current = VideoLibrary.allVideos.get(0);

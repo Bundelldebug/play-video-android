@@ -185,6 +185,12 @@ final class Pages {
         Widgets.showFormSheet(m, m.getString(R.string.open_url), box, m.getString(R.string.play), () -> {
             String u = url.getText().toString().trim();
             if (!u.isEmpty()) {
+                String ytId = YouTubeHub.extractVideoId(u);
+                if (ytId != null) {
+                    String t = title.getText().toString().trim();
+                    YouTubeHub.openVideo(m, new YouTubeHub.YtVideo(ytId, t.isEmpty() ? "YouTube (" + ytId + ")" : t, "YouTube"));
+                    return;
+                }
                 VideoLibrary.Video v = VideoLibrary.addStream(u, title.getText().toString());
                 m.reloadAll();
                 m.playVideo(v, VideoLibrary.streams);
@@ -244,6 +250,16 @@ final class Pages {
                     rail.addView(Widgets.continueCard(m, v, vv -> m.playVideo(v, cw)));
                 }
             }
+
+            // YouTube & NPU Assist quick launcher group
+            Widgets.Group quick = new Widgets.Group(m, null);
+            quick.row(Icons.YOUTUBE, 0xFFFF0033, m.getString(R.string.yt_title),
+                    m.getString(R.string.yt_sub), true, v -> m.openLibrarySection("youtube"));
+            quick.row(Icons.PROSCALER, Ui.ACCENT, m.getString(R.string.psa_title),
+                    NpuVideo.summary(m), true, v -> m.push(new Settings.ProScalerAssistPage(m)));
+            quick.row(Icons.HEADPHONES, Ui.ACCENT, m.getString(R.string.bpa_title),
+                    NpuAudio.summary(m), true, v -> m.push(new Settings.BitPerfectAssistPage(m)));
+            content.addView(quick, Widgets.MW);
 
             // Recently added videos
             if (!VideoLibrary.allVideos.isEmpty()) {
@@ -329,6 +345,8 @@ final class Pages {
                     String.valueOf(VideoLibrary.favoriteVideos().size()), true, v -> m.openLibrarySection("favorites"));
             g.row(Icons.PLAYLIST, Ui.ACCENT, m.getString(R.string.playlists),
                     String.valueOf(VideoLibrary.playlists.size()), true, v -> m.openLibrarySection("playlists"));
+            g.row(Icons.YOUTUBE, 0xFFFF0033, m.getString(R.string.yt_title),
+                    m.getString(R.string.yt_sub), true, v -> m.openLibrarySection("youtube"));
             g.row(Icons.LINK, Ui.ACCENT, m.getString(R.string.network_streams),
                     String.valueOf(VideoLibrary.streams.size()), true, v -> m.openLibrarySection("streams"));
             g.row(Icons.AI, Ui.ACCENT, m.getString(R.string.ai_subtitles),

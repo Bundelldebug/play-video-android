@@ -301,10 +301,10 @@ final class Widgets {
             if (icon != 0) {
                 if (Ui.gStyle) {
                     FrameLayout badge = new FrameLayout(getContext());
-                    badge.setBackground(Ui.round(Ui.alpha(iconTint, Ui.dark ? 0.22f : 0.13f), 11));
+                    badge.setBackground(Ui.round(Ui.alpha(iconTint, Ui.dark ? 0.22f : 0.13f), 17));
                     badge.addView(new Icons.IconView(getContext(), icon, 18, iconTint),
-                            new FrameLayout.LayoutParams(Ui.dp(32), Ui.dp(32)));
-                    LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(Ui.dp(32), Ui.dp(32));
+                            new FrameLayout.LayoutParams(Ui.dp(34), Ui.dp(34)));
+                    LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(Ui.dp(34), Ui.dp(34));
                     blp.rightMargin = Ui.dp(14);
                     r.addView(badge, blp);
                 } else {
@@ -325,6 +325,32 @@ final class Widgets {
                 LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(Ui.dp(18), Ui.dp(18));
                 clp.leftMargin = Ui.dp(6);
                 r.addView(new Icons.IconView(getContext(), Icons.CHEVRON, 15, Ui.text3()), clp);
+            }
+            card.addView(r, MW);
+            return r;
+        }
+
+        View option(String title, boolean checked, OnClickListener click) {
+            if (count > 0) {
+                View sep = new View(getContext());
+                sep.setBackgroundColor(Ui.separator());
+                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, Ui.dp(0.6f)));
+                slp.leftMargin = Ui.dp(18); slp.rightMargin = Ui.dp(18);
+                card.addView(sep, slp);
+            }
+            count++;
+            LinearLayout r = new LinearLayout(getContext());
+            r.setGravity(Gravity.CENTER_VERTICAL);
+            r.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(14));
+            if (click != null) {
+                r.setBackground(ripple());
+                r.setOnClickListener(click);
+            }
+            TextView t = Ui.text(getContext(), title, 16, checked ? Ui.semibold : Ui.regular, checked ? Ui.ACCENT : Ui.text());
+            r.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            if (checked) {
+                r.addView(new Icons.IconView(getContext(), Icons.CHECK, 18, Ui.ACCENT),
+                        new LinearLayout.LayoutParams(Ui.dp(20), Ui.dp(20)));
             }
             card.addView(r, MW);
             return r;
@@ -426,6 +452,121 @@ final class Widgets {
                 return true;
             }
             return super.onTouchEvent(e);
+        }
+    }
+
+    /** Interactive glass slider with spring-lifted refracting thumb (matching Prism GlassSlider). */
+    static final class GlassSlider extends View {
+        interface OnChange { void onChange(float value); }
+        private float v;
+        private final OnChange cb;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF knob = new RectF();
+        private final Ui.Spring lift = new Ui.Spring(520f, 0.72f, 0.002f);
+
+        GlassSlider(Context c, float initial, OnChange cb) {
+            super(c);
+            this.v = Ui.clamp(initial, 0f, 1f);
+            this.cb = cb;
+            lift.onUpdate = this::invalidate;
+            setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(40)));
+        }
+
+        void setValue(float nv) { v = Ui.clamp(nv, 0f, 1f); invalidate(); }
+
+        @Override protected void onDraw(Canvas c) {
+            float l = lift.value;
+            float pad = Ui.dpf(18);
+            float cy = getHeight() / 2f;
+            float th = Ui.gStyle ? Ui.lerp(Ui.dpf(6), Ui.dpf(10), l) : Ui.dpf(6);
+            float usable = Math.max(1f, getWidth() - pad * 2);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Ui.separator());
+            c.drawRoundRect(pad, cy - th / 2f, getWidth() - pad, cy + th / 2f, th / 2f, th / 2f, p);
+            float kx = pad + usable * v;
+            p.setColor(Ui.ACCENT);
+            c.drawRoundRect(pad, cy - th / 2f, kx, cy + th / 2f, th / 2f, th / 2f, p);
+            float kw = Ui.lerp(Ui.dpf(26), Ui.dpf(34), l);
+            float kh = Ui.lerp(Ui.dpf(18), Ui.dpf(23), l);
+            knob.set(kx - kw / 2f, cy - kh / 2f, kx + kw / 2f, cy + kh / 2f);
+            p.setColor(Ui.alpha(0xFF000000, Ui.lerp(0.16f, 0.24f, l)));
+            c.save();
+            c.translate(0, Ui.dpf(1.5f + l));
+            c.drawRoundRect(knob, kh / 2f, kh / 2f, p);
+            c.restore();
+            p.setColor(0xFFFFFFFF);
+            c.drawRoundRect(knob, kh / 2f, kh / 2f, p);
+            if (Ui.gStyle && l > 0.02f) {
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(Ui.dpf(2f) * l);
+                p.setColor(Ui.alpha(Ui.ACCENT, l));
+                c.drawRoundRect(knob, kh / 2f, kh / 2f, p);
+                p.setStyle(Paint.Style.FILL);
+            }
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                if (a == MotionEvent.ACTION_DOWN) lift.to(1f);
+                float pad = Ui.dpf(18);
+                v = Ui.clamp((e.getX() - pad) / Math.max(1f, getWidth() - pad * 2), 0f, 1f);
+                invalidate();
+                if (cb != null) cb.onChange(v);
+                return true;
+            }
+            if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                lift.to(0f);
+                return true;
+            }
+            return super.onTouchEvent(e);
+        }
+    }
+
+    /** Horizontal scrollable filter chips bar. */
+    static final class Chips extends HorizontalScrollView {
+        interface Listener { void onSelect(int index); }
+        private final LinearLayout row;
+        private final String[] items;
+        private int selected;
+
+        Chips(Context c, String[] items, int initial, Listener l) {
+            super(c);
+            this.items = items;
+            this.selected = initial;
+            setHorizontalScrollBarEnabled(false);
+            setOverScrollMode(OVER_SCROLL_NEVER);
+            setClipToPadding(false);
+            row = new LinearLayout(c);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(Ui.dp(18), Ui.dp(4), Ui.dp(18), Ui.dp(8));
+            addView(row);
+            rebuild(l);
+        }
+
+        private void rebuild(Listener l) {
+            row.removeAllViews();
+            for (int i = 0; i < items.length; i++) {
+                final int idx = i;
+                boolean on = i == selected;
+                TextView ch = Ui.text(getContext(), items[i], 13.5f, on ? Ui.semibold : Ui.medium, on ? 0xFFFFFFFF : Ui.text());
+                ch.setPadding(Ui.dp(15), Ui.dp(8), Ui.dp(15), Ui.dp(8));
+                GradientDrawable bg = Ui.round(on ? Ui.ACCENT : Ui.chip(), 100);
+                if (Ui.gStyle && !on) bg.setStroke(Ui.dp(0.8f), Ui.gStroke());
+                ch.setBackground(bg);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.rightMargin = Ui.dp(8);
+                ch.setOnClickListener(v -> {
+                    if (selected != idx) {
+                        selected = idx;
+                        rebuild(l);
+                        if (l != null) l.onSelect(idx);
+                    }
+                });
+                Ui.press(ch, 0.95f);
+                row.addView(ch, lp);
+            }
         }
     }
 

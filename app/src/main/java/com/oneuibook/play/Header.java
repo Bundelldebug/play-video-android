@@ -188,18 +188,20 @@ final class Header extends View {
         if (contentAlpha <= 0.01f) return;
         int fg = Ui.text();
         float bp = backP.value;
-        float titleX = Ui.lerp(Ui.dpf(16), backRect.right + Ui.dpf(12), Ui.clamp(bp, 0f, 1f));
+        float titleX = Ui.lerp(Ui.dpf(16), backRect.right + Ui.dpf(Ui.gStyle ? 4 : 12), Ui.clamp(bp, 0f, 1f));
         if (bp > 0.01f) {
             float s = Ui.lerp(0.35f, 1f, bp), ba = Ui.clamp(bp, 0f, 1f) * contentAlpha;
             RectF br = tmpRect;
             br.set(backRect.centerX() - backRect.width() / 2f * s, backRect.centerY() - backRect.height() / 2f * s,
                     backRect.centerX() + backRect.width() / 2f * s, backRect.centerY() + backRect.height() / 2f * s);
-            backGlass.shapes(br, br.height() / 2f, null, 0, null, 0);
-            backGlass.alpha = ba;
-            backGlass.tint = Ui.barTint();
-            backGlass.blurDp = Ui.barBlur();
-            backGlass.draw(c, this, backdrop);
-            Icons.draw(c, Icons.BACK, br.centerX() - Ui.dpf(1), br.centerY(), Ui.dpf(22) * s, Ui.alpha(fg, ba));
+            if (!Ui.gStyle) {
+                backGlass.shapes(br, br.height() / 2f, null, 0, null, 0);
+                backGlass.alpha = ba;
+                backGlass.tint = Ui.barTint();
+                backGlass.blurDp = Ui.barBlur();
+                backGlass.draw(c, this, backdrop);
+            }
+            Icons.draw(c, Icons.BACK, br.centerX() - Ui.dpf(1), br.centerY(), Ui.dpf(Ui.gStyle ? 24 : 22) * s, Ui.alpha(fg, ba));
             if (pressed == 99) {
                 fill.setColor(Ui.alpha(Ui.pressed(), press.value));
                 c.drawOval(br, fill);
@@ -207,13 +209,20 @@ final class Header extends View {
         }
         if (titleAlpha > 0.01f && title.length() > 0) {
             titlePaint.setColor(Ui.alpha(fg, titleAlpha * contentAlpha));
-            float avail = (pill.isEmpty() ? w - Ui.dpf(16) : pill.left - Ui.dpf(12)) - titleX;
-            float rowCy = vertical ? pill.top + Ui.dpf(23) : pill.centerY();
-            float ts = 17f;
+            int rw = getRootView().getWidth() > 0 ? getRootView().getWidth() : w;
+            int rh = getRootView().getHeight() > 0 ? getRootView().getHeight() : h;
+            float rightLim = pill.isEmpty() ? w - Ui.dpf(16) : pill.left - Ui.dpf(12);
+            if (Dock.tabletFor(rw, rh)) {
+                float tabLeft = w / 2f - Math.min(w - Ui.dpf(180), Ui.dpf(420)) / 2f - Ui.dpf(14);
+                rightLim = Math.min(rightLim, tabLeft);
+            }
+            float avail = rightLim - titleX;
+            float rowCy = vertical ? pill.top + Ui.dpf(23) : (pill.isEmpty() ? backRect.centerY() : pill.centerY());
+            float ts = Ui.gStyle ? 20f : 17f;
             titlePaint.setTextSize(Ui.sp(ts));
             while (ts > 13f && titlePaint.measureText(title) > avail) { ts -= 1f; titlePaint.setTextSize(Ui.sp(ts)); }
             CharSequence t = TextUtils.ellipsize(title, titlePaint, Math.max(0, avail), TextUtils.TruncateAt.END);
-            float baseline = (pill.isEmpty() ? backRect.centerY() : rowCy) + titlePaint.getTextSize() * 0.36f;
+            float baseline = rowCy + titlePaint.getTextSize() * 0.36f;
             c.drawText(t, 0, t.length(), titleX, baseline - Ui.dpf(3) * (1f - titleAlpha), titlePaint);
         }
         float k = morph.value;
@@ -222,8 +231,9 @@ final class Header extends View {
         drawn.set(Ui.lerp(from.left, to.left, k), Ui.lerp(from.top, to.top, k), Ui.lerp(from.right, to.right, k), Ui.lerp(from.bottom, to.bottom, k));
         float pillA = pill.isEmpty() ? 1f - Ui.clamp(k, 0f, 1f) : (fromPill.isEmpty() ? Ui.clamp(k * 1.5f, 0f, 1f) : 1f);
         if (drawn.width() > 1 && pillA > 0.01f && !pillHidden) {
+            float gPillA = Ui.gStyle ? (0.68f + blurAlpha * 0.32f) : 1f;
             pillGlass.shapes(drawn, Math.min(drawn.width(), drawn.height()) / 2f, null, 0, null, 0);
-            pillGlass.alpha = contentAlpha * pillA;
+            pillGlass.alpha = contentAlpha * pillA * gPillA;
             pillGlass.tint = Ui.barTint();
             pillGlass.blurDp = Ui.barBlur();
             pillGlass.pressX = touchX; pillGlass.pressY = touchY;

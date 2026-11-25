@@ -46,6 +46,7 @@ final class Ui {
     static final TimeInterpolator ONEUI_RECOIL_PRESS = new PathInterpolator(0f, 0f, 1f, 1f);
     static final TimeInterpolator ONEUI_RECOIL_RELEASE = new PathInterpolator(0.22f, 0.25f, 0f, 1f);
     static final TimeInterpolator ONEUI_SINE_80 = new PathInterpolator(0.33f, 0f, 0.20f, 1f);
+    static final TimeInterpolator ONEUI_SINE_90 = new PathInterpolator(0.33f, 0f, 0.10f, 1f);
     static final TimeInterpolator ONEUI_POPUP_ENTER = new PathInterpolator(0.365f, 0.483f, 0f, 1.215f);
 
     static Typeface regular, medium, semibold, bold, heavy;
@@ -101,6 +102,12 @@ final class Ui {
         float wd = screenW / density;
         float ratio = screenH / (float) Math.max(1, screenW);
         return wd < 600 && ratio > 1f && ratio <= 1.75f;
+    }
+
+    static boolean wideInner() {
+        float wd = screenW / density, hd = screenH / density;
+        float minD = Math.min(wd, hd), maxD = Math.max(wd, hd);
+        return minD >= 600 && (maxD / Math.max(1f, minD)) <= 1.45f;
     }
 
     // ---- Palette ----

@@ -201,6 +201,25 @@ final class GlassMenu extends FrameLayout {
 
     private void onProgress() {
         float v = p.value;
+        if (Ui.gStyle) {
+            float k = Ui.clamp(v, 0f, 1.08f);
+            float s = Ui.lerp(0.78f, 1f, k);
+            float px = Ui.clamp(anchor.centerX(), target.left, target.right);
+            float py = Ui.clamp(anchor.centerY(), target.top, target.bottom);
+            cur.set(px - (px - target.left) * s, py - (py - target.top) * s,
+                    px + (target.right - px) * s, py + (target.bottom - py) * s);
+            blobRadius = Ui.dpf(26f);
+            applyMaterial(Ui.clamp(v, 0f, 1f));
+            glass.alpha = Ui.clamp(v * 1.4f, 0f, 1f);
+            float ca = Ui.clamp((v - 0.15f) / 0.85f, 0f, 1f);
+            scroller.setAlpha(ca);
+            scroller.setPivotX(px - target.left);
+            scroller.setPivotY(py - target.top);
+            scroller.setScaleX(s);
+            scroller.setScaleY(s);
+            invalidate();
+            return;
+        }
         float gather = Ui.clamp(v / 0.42f, 0f, 1f);
         float swell = Ui.clamp((v - 0.28f) / 0.72f, 0f, 1.2f);
         gather = gather * gather * (3f - 2f * gather);
