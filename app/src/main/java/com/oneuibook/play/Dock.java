@@ -70,11 +70,12 @@ final class Dock extends FrameLayout {
     private final RenderNode contentNode = new RenderNode("dock-content");
 
     private final Ui.Spring lensX = new Ui.Spring(420f, 0.72f, 0.4f);
-    private final Ui.Spring lift = new Ui.Spring(560f, 0.78f, 0.002f);
+    private final Ui.Spring lift = new Ui.Spring(540f, 0.76f, 0.002f);
+    private final Ui.Spring panelRecoil = new Ui.Spring(340f, 0.80f, 0.1f);
     private final Ui.Spring miniPress = new Ui.Spring(700f, 0.9f, 0.002f);
     private final Ui.Spring searchPress = new Ui.Spring(700f, 0.9f, 0.002f);
     private final Ui.Spring barPress = new Ui.Spring(520f, 0.85f, 0.002f);
-    private float touchX, touchY;
+    private float touchX, touchY, dragVel;
     private VelocityTracker vt;
 
     private final TextPaint label = new TextPaint(Paint.ANTI_ALIAS_FLAG);
@@ -131,19 +132,21 @@ final class Dock extends FrameLayout {
         miniGlass.rim = 0.32f;
 
         lensGlass.blur = false;
-        lensGlass.refractDp = 22f;
-        lensGlass.edgeDp = 28f;
-        lensGlass.outerDp = 8f;
-        lensGlass.outerRefractDp = 14f;
-        lensGlass.chroma = 0.9f;
-        lensGlass.rim = 0.6f;
-        lensGlass.tint = Ui.dark ? 0x0FFFFFFF : 0x0AFFFFFF;
-        lensGlass.shadowAlpha = 0.16f;
-        lensGlass.strokeColor = Ui.dark ? 0x40FFFFFF : 0x1A000000;
+        lensGlass.refractDp = 16f;
+        lensGlass.edgeDp = 24f;
+        lensGlass.outerDp = 7.5f;
+        lensGlass.outerRefractDp = 13f;
+        lensGlass.depthEffect = 0.65f;
+        lensGlass.chroma = 0.95f;
+        lensGlass.rim = 0.56f;
+        lensGlass.tint = Ui.dark ? 0x10FFFFFF : 0x0AFFFFFF;
+        lensGlass.shadowAlpha = 0.18f;
+        lensGlass.strokeColor = Ui.dark ? 0x42FFFFFF : 0x1C000000;
 
         Runnable inv = this::invalidate;
         lensX.onUpdate = inv;
         lift.onUpdate = inv;
+        panelRecoil.onUpdate = inv;
         miniPress.onUpdate = inv;
         searchPress.onUpdate = inv;
         barPress.onUpdate = inv;
@@ -481,35 +484,39 @@ final class Dock extends FrameLayout {
         barGlass.alpha = 1f;
         barGlass.draw(c, this, backdrop);
 
-        // 3. Selection capsule / refracting lens
+        // 3. Selection capsule / Kyant0 + MeiloX dual-pass refracting lens
         if (showPill && search < 0.8f && collapse < 0.8f) {
             float l = lift.value;
+            float vNorm = Ui.clamp(dragVel / 1800f, -0.22f, 0.22f);
+            float stretchX = 1f / (1f - Math.abs(vNorm) * 0.72f);
+            float squashY = 1f - Math.abs(vNorm) * 0.24f;
+            float recoil = panelRecoil.value;
             if (rail) {
                 float slotH = pill.height() / 4f;
-                float lh = Ui.lerp(slotH - Ui.dpf(8), slotH + Ui.dpf(6), l);
-                float lw = Ui.lerp(pill.width() - Ui.dpf(10), pill.width() + Ui.dpf(4), l);
-                lens.set(pill.centerX() - lw / 2f, lensX.value - lh / 2f, pill.centerX() + lw / 2f, lensX.value + lh / 2f);
+                float lh = Ui.lerp(slotH - Ui.dpf(8), slotH + Ui.dpf(6), l) * stretchX;
+                float lw = Ui.lerp(pill.width() - Ui.dpf(10), pill.width() + Ui.dpf(4), l) * squashY;
+                lens.set(pill.centerX() - lw / 2f, lensX.value + recoil - lh / 2f, pill.centerX() + lw / 2f, lensX.value + recoil + lh / 2f);
             } else {
                 float slotW = (pill.width() - lead()) / slotCount();
-                float lw = Ui.lerp(slotW - Ui.dpf(8), slotW + Ui.dpf(10), l);
-                float lh = Ui.lerp(pill.height() - Ui.dpf(10), pill.height() + Ui.dpf(4), l);
-                lens.set(lensX.value - lw / 2f, pill.centerY() - lh / 2f, lensX.value + lw / 2f, pill.centerY() + lh / 2f);
+                float lw = Ui.lerp(slotW - Ui.dpf(8), slotW + Ui.dpf(12), l) * stretchX;
+                float lh = Ui.lerp(pill.height() - Ui.dpf(10), pill.height() + Ui.dpf(4), l) * squashY;
+                lens.set(lensX.value + recoil - lw / 2f, pill.centerY() - lh / 2f, lensX.value + recoil + lw / 2f, pill.centerY() + lh / 2f);
             }
             if (Ui.gStyle) {
                 fill.setColor(Ui.alpha(Ui.ACCENT, Ui.dark ? 0.24f : 0.14f));
                 c.drawRoundRect(lens, lens.height() / 2f, lens.height() / 2f, fill);
             } else if (l > 0.02f && c.isHardwareAccelerated()) {
-                // Record tab icons so the lifted lens magnifies and refracts them
                 contentNode.setPosition(0, 0, getWidth(), getHeight());
                 RecordingCanvas rc = contentNode.beginRecording(getWidth(), getHeight());
-                try { drawTabItems(rc, fg, fg2); } finally { contentNode.endRecording(); }
+                try { drawTabItems(rc, Ui.ACCENT, Ui.ACCENT, true); } finally { contentNode.endRecording(); }
                 lensGlass.extra = contentNode;
                 lensGlass.shapes(lens, Math.min(lens.width(), lens.height()) / 2f, null, 0, null, 0);
-                lensGlass.mag = Ui.lerp(1f, 1.18f, l);
+                lensGlass.mag = Ui.lerp(1f, 1.20f, l);
                 lensGlass.magX = lens.centerX();
                 lensGlass.magY = lens.centerY();
+                lensGlass.innerShadow = l;
                 lensGlass.alpha = 1f;
-                drawTabItems(c, fg, fg2);
+                drawTabItems(c, fg, fg2, false);
                 lensGlass.draw(c, this, backdrop);
                 drawSearchAndLead(c, fg);
                 super.dispatchDraw(c);
@@ -518,7 +525,7 @@ final class Dock extends FrameLayout {
                 fill.setColor(Ui.dark ? 0x26FFFFFF : 0x14000000);
                 c.drawRoundRect(lens, Math.min(lens.width(), lens.height()) / 2f, Math.min(lens.width(), lens.height()) / 2f, fill);
             }
-            drawTabItems(c, fg, fg2);
+            drawTabItems(c, fg, fg2, false);
         } else if (showPill && collapse >= 0.8f) {
             Icons.draw(c, TAB_ICONS[selected], pill.centerX(), pill.centerY(), Ui.dpf(22), Ui.ACCENT);
         }
@@ -527,13 +534,13 @@ final class Dock extends FrameLayout {
         super.dispatchDraw(c);
     }
 
-    private void drawTabItems(Canvas c, int fg, int fg2) {
+    private void drawTabItems(Canvas c, int fg, int fg2, boolean forceActive) {
         float alpha = 1f - Math.max(collapse, search);
         if (alpha <= 0.01f) return;
         int slots = slotCount();
         for (int i = 0; i < slots; i++) {
             boolean isSearchSlot = i == 4;
-            boolean on = !isSearchSlot && i == selected;
+            boolean on = forceActive || (!isSearchSlot && i == selected);
             int col = Ui.alpha(on ? Ui.ACCENT : fg2, alpha);
             int ic = isSearchSlot ? Icons.SEARCH : TAB_ICONS[i];
             String lb = isSearchSlot ? getContext().getString(R.string.search) : labels[i];
@@ -720,7 +727,12 @@ final class Dock extends FrameLayout {
             case MotionEvent.ACTION_MOVE:
                 touchX = x; touchY = y;
                 if (touch == T_TAB && collapse < 0.5f) {
-                    if (vt != null) vt.addMovement(e);
+                    if (vt != null) {
+                        vt.addMovement(e);
+                        vt.computeCurrentVelocity(1000);
+                        float v = rail ? vt.getYVelocity() : vt.getXVelocity();
+                        dragVel = dragVel * 0.65f + v * 0.35f;
+                    }
                     float d = rail ? Math.abs(y - downY) : Math.abs(x - downX);
                     if (d > Ui.dpf(8)) dragging = true;
                     if (dragging) {
@@ -728,6 +740,9 @@ final class Dock extends FrameLayout {
                                 ? Ui.clamp(y, pill.top + pill.height() / 8f, pill.bottom - pill.height() / 8f)
                                 : Ui.clamp(x, tabCenter(0), tabCenter(3));
                         lensX.snap(pos);
+                        float span = Math.max(1f, rail ? pill.height() : pill.width());
+                        float frac = Ui.clamp((rail ? (y - downY) : (x - downX)) / span, -1f, 1f);
+                        panelRecoil.snap(Ui.dpf(4f) * Math.signum(frac) * (1f - (1f - Math.abs(frac)) * (1f - Math.abs(frac))));
                     }
                     return true;
                 }
@@ -736,6 +751,8 @@ final class Dock extends FrameLayout {
             case MotionEvent.ACTION_UP: {
                 int t = touch;
                 touch = T_NONE;
+                dragVel = 0f;
+                panelRecoil.to(0f);
                 miniPress.to(0f); searchPress.to(0f); barPress.to(0f); lift.to(0f);
                 if (vt != null) { vt.recycle(); vt = null; }
                 if (t == T_MINI && listener != null) listener.onMini();
@@ -761,6 +778,8 @@ final class Dock extends FrameLayout {
             case MotionEvent.ACTION_CANCEL:
                 touch = T_NONE;
                 dragging = false;
+                dragVel = 0f;
+                panelRecoil.to(0f);
                 miniPress.to(0f); searchPress.to(0f); barPress.to(0f); lift.to(0f);
                 if (vt != null) { vt.recycle(); vt = null; }
                 lensX.to(tabCenter(selected));

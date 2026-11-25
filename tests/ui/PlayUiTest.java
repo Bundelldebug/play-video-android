@@ -123,7 +123,7 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.5", MainActivity.VERSION);
+        assertEquals("9.5.6", MainActivity.VERSION);
         assertEquals("Interstellar 2014", OnlineSubtitle.cleanQuery("[Sub] Interstellar.2014.2160p.4K.UHD.BluRay.x265.mkv"));
         assertEquals(25, NpuAudio.SUPPORTED_CHIPS.length);
         assertNotNull(NpuAudio.displaySoc(act));
