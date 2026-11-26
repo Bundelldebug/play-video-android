@@ -146,7 +146,9 @@ final class YouTubeHub {
 
     static final class ResolvedStream {
         String url;
+        long videoContentLength = -1;
         String audioUrl; // non-null when video & audio are separate adaptiveFormats streams
+        long audioContentLength = -1;
         String qualityLabel;
         String clientUsed;
         String title;
@@ -699,12 +701,14 @@ final class YouTubeHub {
                     return result;
                 }
 
-                // 3) Adaptive dual-track streams (separate H.264 MP4 video + AAC M4A audio — verified working on IOS!)
+                // 3) Adaptive dual-track streams (separate H.264 MP4 video + AAC M4A audio — served via bounded HTTP RangeMediaDataSource!)
                 JSONArray adaptive = sd.optJSONArray("adaptiveFormats");
                 if (adaptive != null) {
                     String bestVidUrl = null, bestVidQ = null;
+                    long bestVidLen = -1;
                     int bestVidScore = -1;
                     String bestAudUrl = null;
+                    long bestAudLen = -1;
                     int bestAudBr = -1;
                     for (int i = 0; i < adaptive.length(); i++) {
                         JSONObject f = adaptive.optJSONObject(i);
@@ -712,12 +716,14 @@ final class YouTubeHub {
                         String u = f.optString("url");
                         if (u.isEmpty()) continue;
                         String mime = f.optString("mimeType").toLowerCase(Locale.US);
+                        long clen = parseLongSafe(f.optString("contentLength", "-1"), -1L);
                         if (mime.startsWith("video/mp4") && mime.contains("avc1")) {
                             int h = f.optInt("height", 360);
                             int capped = h <= 1080 ? h : (1080 - (h - 1080) / 4);
                             if (capped > bestVidScore) {
                                 bestVidScore = capped;
                                 bestVidUrl = u;
+                                bestVidLen = clen;
                                 bestVidQ = f.optString("qualityLabel", h + "p");
                             }
                         } else if (mime.startsWith("audio/mp4")) {
@@ -725,12 +731,15 @@ final class YouTubeHub {
                             if (br > bestAudBr) {
                                 bestAudBr = br;
                                 bestAudUrl = u;
+                                bestAudLen = clen;
                             }
                         }
                     }
                     if (bestVidUrl != null && bestAudUrl != null) {
                         result.url = bestVidUrl;
+                        result.videoContentLength = bestVidLen;
                         result.audioUrl = bestAudUrl;
+                        result.audioContentLength = bestAudLen;
                         result.qualityLabel = bestVidQ + " HD · " + cl[0];
                         result.clientUsed = cl[0];
                         result.hls = false;
@@ -742,6 +751,97 @@ final class YouTubeHub {
         }
         result.error = "Direct stream unavailable";
         return result;
+    }
+
+    private static long parseLongSafe(String s, long def) {
+        try { return Long.parseLong(s); } catch (Throwable t) { return def; }
+    }
+
+    /** Chunked HTTP Range MediaDataSource so YouTube googlevideo CDN serves HTTP 206 instead of 403! */
+    static final class RangeMediaDataSource extends android.media.MediaDataSource {
+        private static final int CHUNK = 262144;
+        private static final int MAX_CACHED = 16;
+        private final String url, ua;
+        private volatile long totalSize;
+        private volatile boolean closed;
+        private final java.util.LinkedHashMap<Long, byte[]> cache = new java.util.LinkedHashMap<Long, byte[]>(MAX_CACHED + 2, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<Long, byte[]> e) { return size() > MAX_CACHED; }
+        };
+
+        RangeMediaDataSource(String url, long contentLength, String ua) {
+            this.url = url;
+            this.totalSize = contentLength;
+            this.ua = ua != null ? ua : IOS_UA;
+        }
+
+        private long ensureSize() throws java.io.IOException {
+            if (totalSize > 0) return totalSize;
+            byte[] probe = fetchRange(0, 4095, true);
+            if (probe != null && probe.length > 0 && totalSize <= 0) totalSize = probe.length;
+            return totalSize > 0 ? totalSize : -1;
+        }
+
+        @Override public long getSize() throws java.io.IOException { return ensureSize(); }
+
+        @Override public int readAt(long position, byte[] buffer, int offset, int size) throws java.io.IOException {
+            if (closed || size <= 0) return 0;
+            long total = ensureSize();
+            if (total > 0 && position >= total) return -1;
+            int want = total > 0 ? (int) Math.min(size, total - position) : size;
+            long idx = position / CHUNK;
+            int inChunk = (int) (position - idx * CHUNK);
+            byte[] data;
+            synchronized (cache) { data = cache.get(idx); }
+            if (data == null) {
+                long start = idx * CHUNK;
+                long end = total > 0 ? Math.min(total - 1, start + CHUNK - 1) : (start + CHUNK - 1);
+                data = fetchRange(start, end, false);
+                if (data == null || data.length == 0) return -1;
+                synchronized (cache) { if (!closed) cache.put(idx, data); }
+            }
+            if (inChunk >= data.length) return -1;
+            int n = Math.min(want, data.length - inChunk);
+            System.arraycopy(data, inChunk, buffer, offset, n);
+            return n;
+        }
+
+        private byte[] fetchRange(long start, long end, boolean parseTotal) throws java.io.IOException {
+            java.io.IOException lastErr = null;
+            for (int attempt = 0; attempt < 2 && !closed; attempt++) {
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(12000);
+                    conn.setRequestProperty("User-Agent", ua);
+                    conn.setRequestProperty("Range", "bytes=" + start + "-" + end);
+                    int code = conn.getResponseCode();
+                    if (code != 206 && code != 200) throw new java.io.IOException("HTTP " + code);
+                    if (parseTotal || totalSize <= 0) {
+                        String cr = conn.getHeaderField("Content-Range");
+                        if (cr != null && cr.lastIndexOf('/') > 0) {
+                            long p = parseLongSafe(cr.substring(cr.lastIndexOf('/') + 1).trim(), -1L);
+                            if (p > 0) totalSize = p;
+                        } else if (code == 200 && conn.getContentLengthLong() > 0) {
+                            totalSize = conn.getContentLengthLong();
+                        }
+                    }
+                    try (InputStream is = conn.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream(CHUNK)) {
+                        byte[] buf = new byte[16384];
+                        int r;
+                        while (!closed && (r = is.read(buf)) != -1) bos.write(buf, 0, r);
+                        return bos.toByteArray();
+                    }
+                } catch (java.io.IOException e) { lastErr = e; } finally { if (conn != null) conn.disconnect(); }
+            }
+            if (lastErr != null) throw lastErr;
+            return null;
+        }
+
+        @Override public void close() {
+            closed = true;
+            synchronized (cache) { cache.clear(); }
+        }
     }
 
     static void loadCategory(Context c, int categoryIdx, ListCb cb) {
@@ -1769,16 +1869,21 @@ final class YouTubeHub {
             if (closing || webMode) return;
             releasePlayer();
             try {
+                String ua = "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA;
                 Map<String, String> headers = new HashMap<>();
-                headers.put("User-Agent", "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA);
+                headers.put("User-Agent", ua);
 
                 mp = new MediaPlayer();
                 mp.setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
                         .build());
-                if (stream.dualTrack) mp.setVolume(0f, 0f);
-                mp.setDataSource(m, Uri.parse(stream.url), headers);
+                if (stream.dualTrack) {
+                    mp.setVolume(0f, 0f);
+                    mp.setDataSource(new RangeMediaDataSource(stream.url, stream.videoContentLength, ua));
+                } else {
+                    mp.setDataSource(m, Uri.parse(stream.url), headers);
+                }
                 if (surface != null) mp.setSurface(surface);
                 mp.setOnVideoSizeChangedListener((player, w, h) -> {
                     if (w > 0 && h > 0) {
@@ -1809,7 +1914,7 @@ final class YouTubeHub {
                             .setUsage(AudioAttributes.USAGE_MEDIA)
                             .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
                             .build());
-                    audioMp.setDataSource(m, Uri.parse(stream.audioUrl), headers);
+                    audioMp.setDataSource(new RangeMediaDataSource(stream.audioUrl, stream.audioContentLength, ua));
                     audioMp.setOnPreparedListener(ap -> {
                         if (closing) return;
                         audioReady = true;
