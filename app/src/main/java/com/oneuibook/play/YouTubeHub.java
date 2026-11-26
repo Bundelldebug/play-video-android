@@ -146,6 +146,7 @@ final class YouTubeHub {
 
     static final class ResolvedStream {
         String url;
+        String audioUrl; // non-null when video & audio are separate adaptiveFormats streams
         String qualityLabel;
         String clientUsed;
         String title;
@@ -153,6 +154,7 @@ final class YouTubeHub {
         String description;
         long durationSec;
         boolean hls;
+        boolean dualTrack;
         String error;
     }
 
@@ -473,6 +475,12 @@ final class YouTubeHub {
     // ---- Direct YouTube InnerTube HTTP client ----
     private static JSONObject innertubePost(Context c, String endpoint, JSONObject body,
                                             String clientNameId, String clientVersion, String ua, boolean attachAuth) {
+        return innertubePost(c, endpoint, body, clientNameId, clientVersion, ua, attachAuth, true);
+    }
+
+    private static JSONObject innertubePost(Context c, String endpoint, JSONObject body,
+                                            String clientNameId, String clientVersion, String ua,
+                                            boolean attachAuth, boolean sendWebOrigin) {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(YT_API_BASE + endpoint + "?prettyPrint=false").openConnection();
@@ -482,8 +490,10 @@ final class YouTubeHub {
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
             conn.setRequestProperty("Accept", "application/json");
-            conn.setRequestProperty("Origin", YT_ORIGIN);
-            conn.setRequestProperty("Referer", YT_ORIGIN + "/");
+            if (sendWebOrigin) {
+                conn.setRequestProperty("Origin", YT_ORIGIN);
+                conn.setRequestProperty("Referer", YT_ORIGIN + "/");
+            }
             conn.setRequestProperty("X-YouTube-Client-Name", clientNameId);
             conn.setRequestProperty("X-YouTube-Client-Version", clientVersion);
             if (ua != null) conn.setRequestProperty("User-Agent", ua);
@@ -632,7 +642,8 @@ final class YouTubeHub {
                         .put("racyCheckOk", true)
                         .put("context", ctx);
 
-                JSONObject resp = innertubePost(c, "player", body, cl[1], cl[2], cl[3], authed && !"IOS".equals(cl[0]));
+                JSONObject resp = innertubePost(c, "player", body, cl[1], cl[2], cl[3],
+                        authed && !"IOS".equals(cl[0]), "TVHTML5_SIMPLY_EMBEDDED_PLAYER".equals(cl[0]));
                 if (resp == null) continue;
 
                 JSONObject vd = resp.optJSONObject("videoDetails");
@@ -646,7 +657,18 @@ final class YouTubeHub {
                 JSONObject sd = resp.optJSONObject("streamingData");
                 if (sd == null) continue;
 
-                // 1) Progressive muxed MP4 formats (audio+video in a single MediaPlayer URL)
+                // 1) HLS manifest URL (IOS client returns adaptive HD video+audio HLS natively supported by Android MediaPlayer!)
+                String hls = sd.optString("hlsManifestUrl");
+                if (!hls.isEmpty()) {
+                    result.url = hls;
+                    result.qualityLabel = "HLS HD · " + cl[0];
+                    result.clientUsed = cl[0];
+                    result.hls = true;
+                    result.dualTrack = false;
+                    return result;
+                }
+
+                // 2) Progressive muxed MP4 formats (single URL audio+video)
                 JSONArray formats = sd.optJSONArray("formats");
                 String chosenUrl = null;
                 String chosenQ = null;
@@ -673,17 +695,48 @@ final class YouTubeHub {
                     result.qualityLabel = chosenQ + " · " + cl[0];
                     result.clientUsed = cl[0];
                     result.hls = false;
+                    result.dualTrack = false;
                     return result;
                 }
 
-                // 2) HLS manifest URL (natively supported by Android MediaPlayer on iOS client)
-                String hls = sd.optString("hlsManifestUrl");
-                if (!hls.isEmpty()) {
-                    result.url = hls;
-                    result.qualityLabel = "HLS HD · " + cl[0];
-                    result.clientUsed = cl[0];
-                    result.hls = true;
-                    return result;
+                // 3) Adaptive dual-track streams (separate H.264 MP4 video + AAC M4A audio — verified working on IOS!)
+                JSONArray adaptive = sd.optJSONArray("adaptiveFormats");
+                if (adaptive != null) {
+                    String bestVidUrl = null, bestVidQ = null;
+                    int bestVidScore = -1;
+                    String bestAudUrl = null;
+                    int bestAudBr = -1;
+                    for (int i = 0; i < adaptive.length(); i++) {
+                        JSONObject f = adaptive.optJSONObject(i);
+                        if (f == null) continue;
+                        String u = f.optString("url");
+                        if (u.isEmpty()) continue;
+                        String mime = f.optString("mimeType").toLowerCase(Locale.US);
+                        if (mime.startsWith("video/mp4") && mime.contains("avc1")) {
+                            int h = f.optInt("height", 360);
+                            int capped = h <= 1080 ? h : (1080 - (h - 1080) / 4);
+                            if (capped > bestVidScore) {
+                                bestVidScore = capped;
+                                bestVidUrl = u;
+                                bestVidQ = f.optString("qualityLabel", h + "p");
+                            }
+                        } else if (mime.startsWith("audio/mp4")) {
+                            int br = f.optInt("bitrate", 0);
+                            if (br > bestAudBr) {
+                                bestAudBr = br;
+                                bestAudUrl = u;
+                            }
+                        }
+                    }
+                    if (bestVidUrl != null && bestAudUrl != null) {
+                        result.url = bestVidUrl;
+                        result.audioUrl = bestAudUrl;
+                        result.qualityLabel = bestVidQ + " HD · " + cl[0];
+                        result.clientUsed = cl[0];
+                        result.hls = false;
+                        result.dualTrack = true;
+                        return result;
+                    }
                 }
             } catch (Throwable ignored) {}
         }
@@ -1477,6 +1530,8 @@ final class YouTubeHub {
         private final Icons.IconView playBtn;
 
         private MediaPlayer mp;
+        private MediaPlayer audioMp; // synchronized companion audio player for adaptiveFormats dual-track streams
+        private boolean videoReady = false, audioReady = false;
         private Surface surface;
         private ResolvedStream currentStream;
         private boolean webMode = false;
@@ -1497,9 +1552,17 @@ final class YouTubeHub {
                         int dur = Math.max(1, mp.getDuration());
                         seekBar.setValue(Ui.clamp((float) pos / dur, 0f, 1f));
                         timeLabel.setText(Ui.time(pos) + " / " + Ui.time(dur));
+                        // Keep dual-track adaptive audio tightly synchronized with video clock
+                        if (audioMp != null && audioReady && playing) {
+                            int aPos = audioMp.getCurrentPosition();
+                            if (Math.abs(pos - aPos) > 260) {
+                                audioMp.seekTo(pos);
+                            }
+                            if (!audioMp.isPlaying() && mp.isPlaying()) audioMp.start();
+                        }
                     } catch (Throwable ignored) {}
                 }
-                MAIN.postDelayed(this, 400);
+                MAIN.postDelayed(this, 350);
             }
         };
 
@@ -1605,7 +1668,11 @@ final class YouTubeHub {
                 if (fromUser && mp != null && prepared) {
                     try {
                         int dur = mp.getDuration();
-                        if (dur > 0) mp.seekTo((int) (dur * val));
+                        if (dur > 0) {
+                            int target = (int) (dur * val);
+                            mp.seekTo(target);
+                            if (audioMp != null && audioReady) audioMp.seekTo(target);
+                        }
                     } catch (Throwable ignored) {}
                 }
             };
@@ -1702,16 +1769,15 @@ final class YouTubeHub {
             if (closing || webMode) return;
             releasePlayer();
             try {
+                Map<String, String> headers = new HashMap<>();
+                headers.put("User-Agent", "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA);
+
                 mp = new MediaPlayer();
                 mp.setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
                         .build());
-                Map<String, String> headers = new HashMap<>();
-                headers.put("User-Agent", "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA);
-                headers.put("Origin", YT_ORIGIN);
-                String ck = getGoogleCookie(m);
-                if (!ck.isEmpty()) headers.put("Cookie", ck);
+                if (stream.dualTrack) mp.setVolume(0f, 0f);
                 mp.setDataSource(m, Uri.parse(stream.url), headers);
                 if (surface != null) mp.setSurface(surface);
                 mp.setOnVideoSizeChangedListener((player, w, h) -> {
@@ -1723,38 +1789,69 @@ final class YouTubeHub {
                 });
                 mp.setOnPreparedListener(player -> {
                     if (closing) return;
-                    prepared = true;
-                    playing = true;
-                    spinner.setVisibility(GONE);
-                    statusPill.setVisibility(GONE);
-                    playBtn.set(Icons.PAUSE, 0xFFFFFFFF);
-                    try {
-                        NpuAudio.apply(m);
-                        if (Math.abs(speed - 1f) > 0.01f) {
-                            PlaybackParams pp = player.getPlaybackParams();
-                            pp.setSpeed(speed);
-                            player.setPlaybackParams(pp);
-                        }
-                    } catch (Throwable ignored) {}
-                    player.start();
-                    MAIN.removeCallbacks(tickRun);
-                    MAIN.post(tickRun);
+                    videoReady = true;
+                    maybeStartPlayback(stream.dualTrack);
                 });
                 mp.setOnCompletionListener(player -> {
                     playing = false;
+                    if (audioMp != null) { try { if (audioMp.isPlaying()) audioMp.pause(); } catch (Throwable ignored) {} }
                     playBtn.set(Icons.PLAY, 0xFFFFFFFF);
                 });
                 mp.setOnErrorListener((player, what, extra) -> {
-                    // Auto fallback to mobile web view if MediaPlayer rejects codec/stream
-                    if (!closing && !webMode) {
-                        switchPlaybackMode(true);
-                    }
+                    if (!closing && !webMode) switchPlaybackMode(true);
                     return true;
                 });
                 mp.prepareAsync();
+
+                if (stream.dualTrack && stream.audioUrl != null) {
+                    audioMp = new MediaPlayer();
+                    audioMp.setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                            .build());
+                    audioMp.setDataSource(m, Uri.parse(stream.audioUrl), headers);
+                    audioMp.setOnPreparedListener(ap -> {
+                        if (closing) return;
+                        audioReady = true;
+                        maybeStartPlayback(true);
+                    });
+                    audioMp.setOnErrorListener((ap, what, extra) -> {
+                        if (!closing && !webMode) switchPlaybackMode(true);
+                        return true;
+                    });
+                    audioMp.prepareAsync();
+                } else {
+                    audioReady = true;
+                }
             } catch (Throwable t) {
                 switchPlaybackMode(true);
             }
+        }
+
+        private void maybeStartPlayback(boolean dual) {
+            if (closing || !videoReady || (dual && !audioReady) || mp == null) return;
+            prepared = true;
+            playing = true;
+            spinner.setVisibility(GONE);
+            statusPill.setVisibility(GONE);
+            playBtn.set(Icons.PAUSE, 0xFFFFFFFF);
+            try {
+                NpuAudio.apply(m);
+                if (Math.abs(speed - 1f) > 0.01f) {
+                    PlaybackParams pp = mp.getPlaybackParams();
+                    pp.setSpeed(speed);
+                    mp.setPlaybackParams(pp);
+                    if (audioMp != null) {
+                        PlaybackParams app = audioMp.getPlaybackParams();
+                        app.setSpeed(speed);
+                        audioMp.setPlaybackParams(app);
+                    }
+                }
+            } catch (Throwable ignored) {}
+            mp.start();
+            if (dual && audioMp != null) audioMp.start();
+            MAIN.removeCallbacks(tickRun);
+            MAIN.post(tickRun);
         }
 
         private void switchPlaybackMode(boolean toWeb) {
@@ -1841,9 +1938,14 @@ final class YouTubeHub {
             try {
                 if (mp.isPlaying()) {
                     mp.pause();
+                    if (audioMp != null && audioReady) audioMp.pause();
                     playing = false;
                 } else {
                     mp.start();
+                    if (audioMp != null && audioReady) {
+                        audioMp.seekTo(mp.getCurrentPosition());
+                        audioMp.start();
+                    }
                     playing = true;
                 }
                 playBtn.set(playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
@@ -1859,6 +1961,7 @@ final class YouTubeHub {
             try {
                 int target = Math.max(0, Math.min(mp.getDuration(), mp.getCurrentPosition() + sec * 1000));
                 mp.seekTo(target);
+                if (audioMp != null && audioReady) audioMp.seekTo(target);
             } catch (Throwable ignored) {}
         }
 
@@ -1877,6 +1980,11 @@ final class YouTubeHub {
                         PlaybackParams pp = mp.getPlaybackParams();
                         pp.setSpeed(speed);
                         mp.setPlaybackParams(pp);
+                        if (audioMp != null && audioReady) {
+                            PlaybackParams app = audioMp.getPlaybackParams();
+                            app.setSpeed(speed);
+                            audioMp.setPlaybackParams(app);
+                        }
                     } catch (Throwable ignored) {}
                 }
             });
@@ -1981,11 +2089,18 @@ final class YouTubeHub {
 
         private void releasePlayer() {
             prepared = false;
+            videoReady = false;
+            audioReady = false;
             playing = false;
             if (mp != null) {
                 try { mp.stop(); } catch (Throwable ignored) {}
                 try { mp.release(); } catch (Throwable ignored) {}
                 mp = null;
+            }
+            if (audioMp != null) {
+                try { audioMp.stop(); } catch (Throwable ignored) {}
+                try { audioMp.release(); } catch (Throwable ignored) {}
+                audioMp = null;
             }
         }
 
