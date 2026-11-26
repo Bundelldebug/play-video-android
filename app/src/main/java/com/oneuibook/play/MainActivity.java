@@ -35,12 +35,13 @@ import java.util.Locale;
  * in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.10";
+    static final String VERSION = "9.5.11";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;
     private static final int REQ_PICK_SUB = 1003;
     private static final int REQ_PICK_SUB2 = 1004;
+    static final int REQ_PICK_ACCOUNT = 1005;
 
     FrameLayout root;
     Glass.Backdrop backdrop;
@@ -441,6 +442,10 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         tabs[tab].setVisibility(View.GONE);
         tab = index;
         tabs[tab].setVisibility(View.VISIBLE);
+        tabs[tab].setAlpha(0f);
+        tabs[tab].setScaleX(0.985f);
+        tabs[tab].setScaleY(0.985f);
+        tabs[tab].animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(Ui.DECEL).start();
         tabs[tab].top().show();
         if (sidebar != null) sidebar.setSelected(tab);
         syncHeader();
@@ -541,8 +546,10 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         if (GlassMenu.dismissAny(root)) return;
         if (YouTubeHub.dismissOverlay(root)) return;
         if (playerOverlay.isOpen()) { playerOverlay.close(); return; }
+        if (sidebar != null) { closeSidebar(); return; }
         if (searchPage != null && searchPage.getVisibility() == View.VISIBLE) { onExitSearch(); return; }
         if (tabs[tab].canPop()) { tabs[tab].pop(); syncHeader(); return; }
+        if (tab != 0) { dock.select(0, true); onTab(0, false); return; }
         super.onBackPressed();
     }
 
@@ -574,6 +581,10 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_PICK_ACCOUNT) {
+            YouTubeHub.handleAccountPickerResult(this, res == RESULT_OK ? data : null);
+            return;
+        }
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (req == REQ_PICK_VIDEO) {

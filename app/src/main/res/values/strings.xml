@@ -317,4 +317,12 @@
     <string name="yt_mode_web">모바일 웹 전환</string>
     <string name="yt_resolving_stream">YouTube 스트림 연결 중…</string>
     <string name="yt_stream_fallback_web">직접 스트림 제한 영상 — 모바일 웹 플레이어로 전환됨</string>
+    <string name="yt_download">동영상 다운로드</string>
+    <string name="yt_downloading">YouTube 동영상 다운로드 중…</string>
+    <string name="yt_download_done">다운로드 완료 · 라이브러리에서 바로 재생할 수 있습니다</string>
+    <string name="yt_download_failed">다운로드하지 못했습니다</string>
+    <string name="yt_quality">화질 선택</string>
+    <string name="yt_quality_auto">자동 (HLS HD)</string>
+    <string name="yt_microg_signin">microG 계정으로 로그인</string>
+    <string name="yt_cat_all">전체</string>
 </resources>

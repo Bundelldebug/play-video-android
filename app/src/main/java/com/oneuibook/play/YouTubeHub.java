@@ -86,8 +86,10 @@ final class YouTubeHub {
     static final String PREF_SUB_CHANNELS = "yt_sub_channels";
     static final String PREF_GOOGLE_COOKIE = "yt_google_cookie";
     static final String PREF_GOOGLE_ACCOUNT = "yt_google_account";
+    static final String PREF_GOOGLE_OAUTH = "yt_google_oauth";
     static final String DEFAULT_PIPED = "https://pipedapi.kavin.rocks";
     static final String NEWPIPE_PKG = "org.schabi.newpipe";
+    private static Runnable pendingAccountCallback;
 
     private static final String[][] MICROG_PKGS = {
             {"app.revanced.android.gms", "ReVanced microG (GmsCore)"},
@@ -144,6 +146,34 @@ final class YouTubeHub {
         }
     }
 
+    static final class QualityOption {
+        final String label;
+        final int height;
+        final String videoUrl;
+        final long videoContentLength;
+        final String audioUrl;
+        final long audioContentLength;
+        final boolean hls;
+        final boolean dualTrack;
+        final boolean audioOnly;
+        final String clientUsed;
+
+        QualityOption(String label, int height, String videoUrl, long videoLen,
+                      String audioUrl, long audioLen, boolean hls, boolean dualTrack,
+                      boolean audioOnly, String clientUsed) {
+            this.label = label;
+            this.height = height;
+            this.videoUrl = videoUrl;
+            this.videoContentLength = videoLen;
+            this.audioUrl = audioUrl;
+            this.audioContentLength = audioLen;
+            this.hls = hls;
+            this.dualTrack = dualTrack;
+            this.audioOnly = audioOnly;
+            this.clientUsed = clientUsed;
+        }
+    }
+
     static final class ResolvedStream {
         String url;
         long videoContentLength = -1;
@@ -158,6 +188,7 @@ final class YouTubeHub {
         boolean hls;
         boolean dualTrack;
         String error;
+        final List<QualityOption> qualities = new ArrayList<>();
     }
 
     static final class MicroGInfo {
@@ -220,6 +251,68 @@ final class YouTubeHub {
         }
     }
 
+    /**
+     * Initiates real microG / Google account login using Android's AccountManager picker + OAuth token retrieval,
+     * falling back cleanly to pre-filled Google WebView session login instead of merely launching the microG app.
+     */
+    static void startMicroGAccountLogin(MainActivity m, Runnable onDone) {
+        pendingAccountCallback = onDone;
+        try {
+            Intent picker = AccountManager.newChooseAccountIntent(
+                    null, null, new String[]{"com.google"}, null, null, null, null);
+            m.startActivityForResult(picker, MainActivity.REQ_PICK_ACCOUNT);
+        } catch (Throwable t) {
+            // If no account picker is registered, check visible accounts or open pre-filled login dialog
+            List<String> accs = detectDeviceGoogleAccounts(m);
+            showGoogleLoginDialog(m, onDone, accs.isEmpty() ? null : accs.get(0));
+        }
+    }
+
+    /** Handles AccountManager picker result from microG / Google Play Services and obtains YouTube OAuth token or session. */
+    static void handleAccountPickerResult(MainActivity m, Intent data) {
+        Runnable cb = pendingAccountCallback;
+        pendingAccountCallback = null;
+        if (data == null) return;
+        String accName = data.getStringExtra(AccountManager.KEY_ACCOUNT_NAME);
+        String accType = data.getStringExtra(AccountManager.KEY_ACCOUNT_TYPE);
+        if (accName == null || accName.trim().isEmpty()) return;
+        if (accType == null || accType.isEmpty()) accType = "com.google";
+
+        MainActivity.prefs(m).edit().putString(PREF_GOOGLE_ACCOUNT, accName.trim()).apply();
+        try {
+            AccountManager am = AccountManager.get(m);
+            Account acc = new Account(accName.trim(), accType);
+            am.getAuthToken(acc, "oauth2:https://www.googleapis.com/auth/youtube", null, m, future -> {
+                try {
+                    android.os.Bundle res = future.getResult();
+                    String tok = res == null ? null : res.getString(AccountManager.KEY_AUTHTOKEN);
+                    if (tok != null && !tok.isEmpty()) {
+                        MainActivity.prefs(m).edit()
+                                .putString(PREF_GOOGLE_OAUTH, tok)
+                                .putString(PREF_GOOGLE_ACCOUNT, accName.trim())
+                                .apply();
+                        MAIN.post(() -> {
+                            Toast.makeText(m, accName + " · microG 로그인 완료", Toast.LENGTH_SHORT).show();
+                            if (cb != null) cb.run();
+                        });
+                        return;
+                    }
+                } catch (Throwable ignored) {}
+                // If microG declined direct 3rd-party OAuth scope, seamlessly finish YouTube cookie login pre-filled with this account
+                MAIN.post(() -> {
+                    Toast.makeText(m, accName + " 계정으로 YouTube 세션을 연결합니다", Toast.LENGTH_SHORT).show();
+                    showGoogleLoginDialog(m, cb, accName.trim());
+                });
+            }, MAIN);
+        } catch (Throwable t) {
+            showGoogleLoginDialog(m, cb, accName.trim());
+        }
+    }
+
+    static String getGoogleOAuthToken(Context c) {
+        return MainActivity.prefs(c).getString(PREF_GOOGLE_OAUTH, "").trim();
+    }
+
     static String getGoogleCookie(Context c) {
         String saved = MainActivity.prefs(c).getString(PREF_GOOGLE_COOKIE, "").trim();
         if (!saved.isEmpty()) return saved;
@@ -236,6 +329,7 @@ final class YouTubeHub {
     }
 
     static boolean isGoogleSignedIn(Context c) {
+        if (!getGoogleOAuthToken(c).isEmpty()) return true;
         String ck = getGoogleCookie(c);
         return ck.contains("SAPISID=") || ck.contains("__Secure-3PAPISID=") || ck.contains("SID=");
     }
@@ -252,6 +346,7 @@ final class YouTubeHub {
         MainActivity.prefs(c).edit()
                 .remove(PREF_GOOGLE_COOKIE)
                 .remove(PREF_GOOGLE_ACCOUNT)
+                .remove(PREF_GOOGLE_OAUTH)
                 .apply();
         try {
             CookieManager cm = CookieManager.getInstance();
@@ -295,16 +390,22 @@ final class YouTubeHub {
 
     /** Opens Google / microG compatible WebView sign-in dialog capturing YouTube session cookies. */
     static void showGoogleLoginDialog(MainActivity m, Runnable onDone) {
+        showGoogleLoginDialog(m, onDone, null);
+    }
+
+    static void showGoogleLoginDialog(MainActivity m, Runnable onDone, String prefillEmail) {
         LinearLayout box = new LinearLayout(m);
         box.setOrientation(LinearLayout.VERTICAL);
 
         MicroGInfo mg = detectMicroGProvider(m);
         List<String> devAccs = detectDeviceGoogleAccounts(m);
         StringBuilder hint = new StringBuilder();
-        if (mg != null && mg.isMicroG) {
+        if (prefillEmail != null && !prefillEmail.isEmpty()) {
+            hint.append("선택한 계정: ").append(prefillEmail).append("\n로그인을 완료하면 YouTube 맞춤 피드와 고화질 스트림이 자동 연동됩니다.");
+        } else if (mg != null && mg.isMicroG) {
             hint.append(m.getString(R.string.yt_microg_detected, mg.label));
             if (!devAccs.isEmpty()) hint.append(" · ").append(devAccs.get(0));
-            hint.append("\n아래에서 Google 계정에 로그인하면 YouTube 맞춤 피드 및 스트림 세션이 연동됩니다.");
+            hint.append("\n아래에서 Google 계정에 로그인하거나 'microG 계정 선택'으로 바로 연동할 수 있습니다.");
         } else {
             hint.append("Google 계정에 로그인하면 YouTube 맞춤 피드와 연령·세션 제한 영상을 재생할 수 있습니다.");
         }
@@ -332,7 +433,8 @@ final class YouTubeHub {
                 String ckMob = cm.getCookie("https://m.youtube.com");
                 String merged = (ckYt != null ? ckYt : "") + (ckMob != null && !ckMob.equals(ckYt) ? "; " + ckMob : "");
                 if (merged.contains("SAPISID=") || merged.contains("__Secure-3PAPISID=") || merged.contains("SID=")) {
-                    String label = !devAccs.isEmpty() ? devAccs.get(0) : m.getString(R.string.yt_google_signed_in);
+                    String label = (prefillEmail != null && !prefillEmail.isEmpty()) ? prefillEmail
+                            : (!devAccs.isEmpty() ? devAccs.get(0) : m.getString(R.string.yt_google_signed_in));
                     MainActivity.prefs(m).edit()
                             .putString(PREF_GOOGLE_COOKIE, merged.trim())
                             .putString(PREF_GOOGLE_ACCOUNT, label)
@@ -359,7 +461,11 @@ final class YouTubeHub {
             return false;
         });
         wv.setWebChromeClient(new WebChromeClient());
-        wv.loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F");
+        String loginUrl = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F";
+        if (prefillEmail != null && !prefillEmail.isEmpty()) {
+            try { loginUrl += "&Email=" + URLEncoder.encode(prefillEmail, "UTF-8"); } catch (Throwable ignored) {}
+        }
+        wv.loadUrl(loginUrl);
 
         int h = Math.max(Ui.dp(380), (int) (Ui.screenH * 0.62f));
         box.addView(wv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
@@ -370,8 +476,8 @@ final class YouTubeHub {
                 .setView(box)
                 .setPositiveButton("로그인 완료 적용", (d, w) -> captureSession.run())
                 .setNegativeButton(m.getString(R.string.cancel), null);
-        if (mg != null && mg.isMicroG) {
-            b.setNeutralButton(m.getString(R.string.yt_microg_open), (d, w) -> openMicroGSettings(m));
+        if (prefillEmail == null && mg != null && mg.isMicroG) {
+            b.setNeutralButton(m.getString(R.string.yt_microg_signin), (d, w) -> startMicroGAccountLogin(m, onDone));
         }
         dlgRef[0] = b.show();
         android.view.Window dw = dlgRef[0].getWindow();
@@ -501,12 +607,15 @@ final class YouTubeHub {
             if (ua != null) conn.setRequestProperty("User-Agent", ua);
 
             if (attachAuth) {
+                String oauth = getGoogleOAuthToken(c);
                 String cookie = getGoogleCookie(c);
                 if (!cookie.isEmpty()) {
                     conn.setRequestProperty("Cookie", cookie);
                     String auth = buildSapisidHash(cookie, YT_ORIGIN);
                     if (auth != null) conn.setRequestProperty("Authorization", auth);
                     conn.setRequestProperty("X-Origin", YT_ORIGIN);
+                } else if (!oauth.isEmpty()) {
+                    conn.setRequestProperty("Authorization", "Bearer " + oauth);
                 }
             }
 
@@ -659,22 +768,38 @@ final class YouTubeHub {
                 JSONObject sd = resp.optJSONObject("streamingData");
                 if (sd == null) continue;
 
-                // 1) HLS manifest URL (IOS client returns adaptive HD video+audio HLS natively supported by Android MediaPlayer!)
+                // Collect ALL available quality options (HLS Auto + all progressive + all adaptive H.264 resolutions + Audio)
                 String hls = sd.optString("hlsManifestUrl");
                 if (!hls.isEmpty()) {
-                    result.url = hls;
-                    result.qualityLabel = "HLS HD · " + cl[0];
-                    result.clientUsed = cl[0];
-                    result.hls = true;
-                    result.dualTrack = false;
-                    return result;
+                    result.qualities.add(new QualityOption("자동 (HLS HD)", 9999, hls, -1L, null, -1L, true, false, false, cl[0]));
                 }
 
-                // 2) Progressive muxed MP4 formats (single URL audio+video)
+                // Best AAC audio stream for pairing with adaptive video resolutions & audio-only download
+                String bestAudUrl = null;
+                long bestAudLen = -1;
+                int bestAudBr = -1;
+                JSONArray adaptive = sd.optJSONArray("adaptiveFormats");
+                if (adaptive != null) {
+                    for (int i = 0; i < adaptive.length(); i++) {
+                        JSONObject f = adaptive.optJSONObject(i);
+                        if (f == null) continue;
+                        String u = f.optString("url");
+                        if (u.isEmpty()) continue;
+                        String mime = f.optString("mimeType").toLowerCase(Locale.US);
+                        if (mime.startsWith("audio/mp4")) {
+                            int br = f.optInt("bitrate", 0);
+                            if (br > bestAudBr) {
+                                bestAudBr = br;
+                                bestAudUrl = u;
+                                bestAudLen = parseLongSafe(f.optString("contentLength", "-1"), -1L);
+                            }
+                        }
+                    }
+                }
+
+                Map<String, QualityOption> byLabel = new java.util.LinkedHashMap<>();
+                // Progressive formats (single muxed MP4 — fast & directly downloadable!)
                 JSONArray formats = sd.optJSONArray("formats");
-                String chosenUrl = null;
-                String chosenQ = null;
-                int bestH = -1;
                 if (formats != null) {
                     for (int i = 0; i < formats.length(); i++) {
                         JSONObject f = formats.optJSONObject(i);
@@ -682,70 +807,54 @@ final class YouTubeHub {
                         String u = f.optString("url");
                         if (u.isEmpty()) continue;
                         String mime = f.optString("mimeType").toLowerCase(Locale.US);
-                        if (!mime.contains("video/mp4") && !mime.contains("video/webm")) continue;
+                        if (!mime.contains("video/mp4")) continue;
                         int h = f.optInt("height", 360);
-                        int score = h + (mime.contains("video/mp4") ? 2000 : 0);
-                        if (score > bestH) {
-                            bestH = score;
-                            chosenUrl = u;
-                            chosenQ = f.optString("qualityLabel", h + "p");
-                        }
+                        String qLbl = f.optString("qualityLabel", h + "p");
+                        long clen = parseLongSafe(f.optString("contentLength", "-1"), -1L);
+                        byLabel.put(qLbl, new QualityOption(qLbl, h, u, clen, null, -1L, false, false, false, cl[0]));
                     }
                 }
-                if (chosenUrl != null) {
-                    result.url = chosenUrl;
-                    result.qualityLabel = chosenQ + " · " + cl[0];
-                    result.clientUsed = cl[0];
-                    result.hls = false;
-                    result.dualTrack = false;
-                    return result;
-                }
-
-                // 3) Adaptive dual-track streams (separate H.264 MP4 video + AAC M4A audio — served via bounded HTTP RangeMediaDataSource!)
-                JSONArray adaptive = sd.optJSONArray("adaptiveFormats");
-                if (adaptive != null) {
-                    String bestVidUrl = null, bestVidQ = null;
-                    long bestVidLen = -1;
-                    int bestVidScore = -1;
-                    String bestAudUrl = null;
-                    long bestAudLen = -1;
-                    int bestAudBr = -1;
+                // Adaptive H.264 video resolutions (2160p, 1440p, 1080p, 720p, 480p, 360p, 240p, 144p) paired with AAC audio
+                if (adaptive != null && bestAudUrl != null) {
                     for (int i = 0; i < adaptive.length(); i++) {
                         JSONObject f = adaptive.optJSONObject(i);
                         if (f == null) continue;
                         String u = f.optString("url");
                         if (u.isEmpty()) continue;
                         String mime = f.optString("mimeType").toLowerCase(Locale.US);
+                        if (!mime.startsWith("video/mp4") || !mime.contains("avc1")) continue;
+                        int h = f.optInt("height", 360);
+                        String qLbl = f.optString("qualityLabel", h + "p");
                         long clen = parseLongSafe(f.optString("contentLength", "-1"), -1L);
-                        if (mime.startsWith("video/mp4") && mime.contains("avc1")) {
-                            int h = f.optInt("height", 360);
-                            int capped = h <= 1080 ? h : (1080 - (h - 1080) / 4);
-                            if (capped > bestVidScore) {
-                                bestVidScore = capped;
-                                bestVidUrl = u;
-                                bestVidLen = clen;
-                                bestVidQ = f.optString("qualityLabel", h + "p");
-                            }
-                        } else if (mime.startsWith("audio/mp4")) {
-                            int br = f.optInt("bitrate", 0);
-                            if (br > bestAudBr) {
-                                bestAudBr = br;
-                                bestAudUrl = u;
-                                bestAudLen = clen;
-                            }
+                        if (!byLabel.containsKey(qLbl)) {
+                            byLabel.put(qLbl, new QualityOption(qLbl, h, u, clen, bestAudUrl, bestAudLen, false, true, false, cl[0]));
                         }
                     }
-                    if (bestVidUrl != null && bestAudUrl != null) {
-                        result.url = bestVidUrl;
-                        result.videoContentLength = bestVidLen;
-                        result.audioUrl = bestAudUrl;
-                        result.audioContentLength = bestAudLen;
-                        result.qualityLabel = bestVidQ + " HD · " + cl[0];
-                        result.clientUsed = cl[0];
-                        result.hls = false;
-                        result.dualTrack = true;
-                        return result;
+                }
+                List<QualityOption> sorted = new ArrayList<>(byLabel.values());
+                java.util.Collections.sort(sorted, (a, b) -> Integer.compare(b.height, a.height));
+                result.qualities.addAll(sorted);
+                if (bestAudUrl != null) {
+                    result.qualities.add(new QualityOption("오디오만 (M4A)", 0, bestAudUrl, bestAudLen, bestAudUrl, bestAudLen, false, false, true, cl[0]));
+                }
+
+                // Pick best default playback option: HLS HD if present, else highest <=1080p video option
+                if (!result.qualities.isEmpty()) {
+                    QualityOption def = result.qualities.get(0);
+                    if (!def.hls) {
+                        for (QualityOption qo : result.qualities) {
+                            if (!qo.audioOnly && qo.height <= 1080) { def = qo; break; }
+                        }
                     }
+                    result.url = def.videoUrl;
+                    result.videoContentLength = def.videoContentLength;
+                    result.audioUrl = def.audioUrl;
+                    result.audioContentLength = def.audioContentLength;
+                    result.qualityLabel = def.label;
+                    result.clientUsed = def.clientUsed;
+                    result.hls = def.hls;
+                    result.dualTrack = def.dualTrack;
+                    return result;
                 }
             } catch (Throwable ignored) {}
         }
@@ -757,26 +866,81 @@ final class YouTubeHub {
         try { return Long.parseLong(s); } catch (Throwable t) { return def; }
     }
 
-    /** Chunked HTTP Range MediaDataSource so YouTube googlevideo CDN serves HTTP 206 instead of 403! */
+    /** Prefetching HTTP Range MediaDataSource (512 KB chunks + async look-ahead + 4 retries) for zero-stutter YouTube HD! */
     static final class RangeMediaDataSource extends android.media.MediaDataSource {
-        private static final int CHUNK = 262144;
-        private static final int MAX_CACHED = 16;
+        private static final int CHUNK = 524288;
+        private static final int MAX_CACHED = 24;
+        private static final ExecutorService PREFETCH = Executors.newFixedThreadPool(2);
         private final String url, ua;
         private volatile long totalSize;
         private volatile boolean closed;
         private final java.util.LinkedHashMap<Long, byte[]> cache = new java.util.LinkedHashMap<Long, byte[]>(MAX_CACHED + 2, 0.75f, true) {
             @Override protected boolean removeEldestEntry(Map.Entry<Long, byte[]> e) { return size() > MAX_CACHED; }
         };
+        private final java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.CompletableFuture<byte[]>> inFlight =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
         RangeMediaDataSource(String url, long contentLength, String ua) {
             this.url = url;
             this.totalSize = contentLength;
             this.ua = ua != null ? ua : IOS_UA;
+            prefetch(0);
+            if (contentLength <= 0 || contentLength > CHUNK) prefetch(1);
+        }
+
+        private void prefetch(final long idx) {
+            if (closed || idx < 0) return;
+            long total = totalSize;
+            if (total > 0 && idx * CHUNK >= total) return;
+            synchronized (cache) { if (cache.containsKey(idx)) return; }
+            if (inFlight.containsKey(idx)) return;
+            java.util.concurrent.CompletableFuture<byte[]> fut = new java.util.concurrent.CompletableFuture<>();
+            if (inFlight.putIfAbsent(idx, fut) != null) return;
+            PREFETCH.execute(() -> {
+                try {
+                    if (closed) { fut.complete(null); return; }
+                    long start = idx * CHUNK;
+                    long curTotal = totalSize;
+                    long end = curTotal > 0 ? Math.min(curTotal - 1, start + CHUNK - 1) : (start + CHUNK - 1);
+                    byte[] d = fetchRange(start, end, curTotal <= 0);
+                    if (d != null && d.length > 0 && !closed) {
+                        synchronized (cache) { if (!closed) cache.put(idx, d); }
+                    }
+                    fut.complete(d);
+                } catch (Throwable t) {
+                    fut.completeExceptionally(t);
+                } finally {
+                    inFlight.remove(idx, fut);
+                }
+            });
+        }
+
+        private byte[] loadChunk(long idx) throws java.io.IOException {
+            if (closed) return null;
+            synchronized (cache) {
+                byte[] hit = cache.get(idx);
+                if (hit != null) return hit;
+            }
+            java.util.concurrent.CompletableFuture<byte[]> ex = inFlight.get(idx);
+            if (ex != null) {
+                try {
+                    byte[] waited = ex.get(16, java.util.concurrent.TimeUnit.SECONDS);
+                    if (waited != null && waited.length > 0) return waited;
+                } catch (Throwable ignored) {}
+            }
+            long total = totalSize;
+            long start = idx * CHUNK;
+            long end = total > 0 ? Math.min(total - 1, start + CHUNK - 1) : (start + CHUNK - 1);
+            byte[] data = fetchRange(start, end, total <= 0);
+            if (data != null && data.length > 0 && !closed) {
+                synchronized (cache) { if (!closed) cache.put(idx, data); }
+            }
+            return data;
         }
 
         private long ensureSize() throws java.io.IOException {
             if (totalSize > 0) return totalSize;
-            byte[] probe = fetchRange(0, 4095, true);
+            byte[] probe = loadChunk(0);
             if (probe != null && probe.length > 0 && totalSize <= 0) totalSize = probe.length;
             return totalSize > 0 ? totalSize : -1;
         }
@@ -790,16 +954,10 @@ final class YouTubeHub {
             int want = total > 0 ? (int) Math.min(size, total - position) : size;
             long idx = position / CHUNK;
             int inChunk = (int) (position - idx * CHUNK);
-            byte[] data;
-            synchronized (cache) { data = cache.get(idx); }
-            if (data == null) {
-                long start = idx * CHUNK;
-                long end = total > 0 ? Math.min(total - 1, start + CHUNK - 1) : (start + CHUNK - 1);
-                data = fetchRange(start, end, false);
-                if (data == null || data.length == 0) return -1;
-                synchronized (cache) { if (!closed) cache.put(idx, data); }
-            }
-            if (inChunk >= data.length) return -1;
+            prefetch(idx + 1);
+            prefetch(idx + 2);
+            byte[] data = loadChunk(idx);
+            if (data == null || data.length == 0 || inChunk >= data.length) return -1;
             int n = Math.min(want, data.length - inChunk);
             System.arraycopy(data, inChunk, buffer, offset, n);
             return n;
@@ -807,13 +965,17 @@ final class YouTubeHub {
 
         private byte[] fetchRange(long start, long end, boolean parseTotal) throws java.io.IOException {
             java.io.IOException lastErr = null;
-            for (int attempt = 0; attempt < 2 && !closed; attempt++) {
+            for (int attempt = 0; attempt < 4 && !closed; attempt++) {
+                if (attempt > 0) {
+                    try { Thread.sleep(attempt == 1 ? 120L : (attempt == 2 ? 320L : 650L)); } catch (InterruptedException ignored) { break; }
+                }
                 HttpURLConnection conn = null;
                 try {
                     conn = (HttpURLConnection) new URL(url).openConnection();
                     conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(12000);
+                    conn.setReadTimeout(15000);
                     conn.setRequestProperty("User-Agent", ua);
+                    conn.setRequestProperty("Accept-Encoding", "identity");
                     conn.setRequestProperty("Range", "bytes=" + start + "-" + end);
                     int code = conn.getResponseCode();
                     if (code != 206 && code != 200) throw new java.io.IOException("HTTP " + code);
@@ -827,10 +989,12 @@ final class YouTubeHub {
                         }
                     }
                     try (InputStream is = conn.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream(CHUNK)) {
-                        byte[] buf = new byte[16384];
+                        byte[] buf = new byte[32768];
                         int r;
                         while (!closed && (r = is.read(buf)) != -1) bos.write(buf, 0, r);
-                        return bos.toByteArray();
+                        byte[] out = bos.toByteArray();
+                        if (out.length > 0) return out;
+                        throw new java.io.IOException("empty body");
                     }
                 } catch (java.io.IOException e) { lastErr = e; } finally { if (conn != null) conn.disconnect(); }
             }
@@ -840,7 +1004,206 @@ final class YouTubeHub {
 
         @Override public void close() {
             closed = true;
+            inFlight.clear();
             synchronized (cache) { cache.clear(); }
+        }
+    }
+
+    // ---- Direct YouTube Video Downloader (chunked HTTP 206 Range + MediaMuxer for HD + MediaStore Movies/PlayVideo) ----
+    static void showDownloadSheet(MainActivity m, YtVideo v, ResolvedStream preResolved, View anchor) {
+        if (v == null || v.id.isEmpty()) return;
+        Runnable openPicker = () -> {};
+        if (preResolved != null && !preResolved.qualities.isEmpty()) {
+            presentDownloadQualitySheet(m, v, preResolved, anchor);
+            return;
+        }
+        Toast.makeText(m, m.getString(R.string.yt_resolving_stream), Toast.LENGTH_SHORT).show();
+        resolveStream(m, v.id, stream -> {
+            if (stream == null || stream.qualities.isEmpty()) {
+                Toast.makeText(m, m.getString(R.string.yt_download_failed), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            presentDownloadQualitySheet(m, v, stream, anchor);
+        });
+    }
+
+    private static void presentDownloadQualitySheet(MainActivity m, YtVideo v, ResolvedStream stream, View anchor) {
+        List<QualityOption> downloadable = new ArrayList<>();
+        for (QualityOption q : stream.qualities) {
+            if (!q.hls) downloadable.add(q);
+        }
+        if (downloadable.isEmpty()) {
+            Toast.makeText(m, m.getString(R.string.yt_download_failed), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] labels = new String[downloadable.size()];
+        for (int i = 0; i < downloadable.size(); i++) {
+            QualityOption q = downloadable.get(i);
+            String sz = q.videoContentLength > 0 ? (" · " + Ui.size(q.videoContentLength + Math.max(0, q.audioContentLength))) : "";
+            labels[i] = q.label + (q.audioOnly ? "" : (q.dualTrack ? " (HD MP4)" : " (MP4)")) + sz;
+        }
+        Widgets.pickSheet(m, anchor, m.getString(R.string.yt_download), labels, 0, idx -> {
+            downloadOptionToDevice(m, v, downloadable.get(idx));
+        });
+    }
+
+    private static void downloadOptionToDevice(MainActivity m, YtVideo v, QualityOption q) {
+        Toast.makeText(m, m.getString(R.string.yt_downloading) + " (" + q.label + ")", Toast.LENGTH_SHORT).show();
+        final Context appCtx = m.getApplicationContext();
+        EXEC.execute(() -> {
+            java.io.File tmpV = null, tmpA = null, tmpOut = null;
+            try {
+                String ua = "IOS".equals(q.clientUsed) ? IOS_UA : VR_UA;
+                String safeName = (v.title == null ? v.id : v.title).replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+                if (safeName.length() > 64) safeName = safeName.substring(0, 64).trim();
+                if (safeName.isEmpty()) safeName = "YouTube_" + v.id;
+                String ext = q.audioOnly ? ".m4a" : ".mp4";
+                String fileName = safeName + "_" + q.label.replaceAll("[^A-Za-z0-9]", "") + ext;
+
+                java.io.File cacheDir = appCtx.getCacheDir();
+                tmpV = new java.io.File(cacheDir, "ytdl_v_" + v.id + "_" + System.currentTimeMillis() + ext);
+                downloadRangeToFile(q.videoUrl, q.videoContentLength, ua, tmpV);
+
+                java.io.File finalFile = tmpV;
+                if (q.dualTrack && q.audioUrl != null) {
+                    tmpA = new java.io.File(cacheDir, "ytdl_a_" + v.id + "_" + System.currentTimeMillis() + ".m4a");
+                    downloadRangeToFile(q.audioUrl, q.audioContentLength, ua, tmpA);
+                    tmpOut = new java.io.File(cacheDir, "ytdl_mux_" + v.id + "_" + System.currentTimeMillis() + ".mp4");
+                    muxVideoAndAudio(tmpV, tmpA, tmpOut);
+                    finalFile = tmpOut;
+                }
+
+                // Save into public MediaStore Movies/PlayVideo (or Music/PlayVideo for audio-only)
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, q.audioOnly ? "audio/mp4" : "video/mp4");
+                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        (q.audioOnly ? android.os.Environment.DIRECTORY_MUSIC : android.os.Environment.DIRECTORY_MOVIES) + "/PlayVideo");
+                Uri target = appCtx.getContentResolver().insert(
+                        q.audioOnly ? android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                                : android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv);
+                if (target == null) throw new java.io.IOException("MediaStore insert failed");
+                try (java.io.InputStream is = new java.io.FileInputStream(finalFile);
+                     OutputStream os = appCtx.getContentResolver().openOutputStream(target)) {
+                    if (os == null) throw new java.io.IOException("openOutputStream failed");
+                    byte[] buf = new byte[65536];
+                    int r;
+                    while ((r = is.read(buf)) != -1) os.write(buf, 0, r);
+                }
+                MAIN.post(() -> {
+                    Toast.makeText(m, m.getString(R.string.yt_download_done), Toast.LENGTH_LONG).show();
+                    VideoLibrary.scan(m, m::reloadAll);
+                });
+            } catch (Throwable t) {
+                MAIN.post(() -> Toast.makeText(m, m.getString(R.string.yt_download_failed) + " (" + t.getMessage() + ")", Toast.LENGTH_SHORT).show());
+            } finally {
+                if (tmpV != null) tmpV.delete();
+                if (tmpA != null) tmpA.delete();
+                if (tmpOut != null) tmpOut.delete();
+            }
+        });
+    }
+
+    private static void downloadRangeToFile(String url, long knownSize, String ua, java.io.File dest) throws Exception {
+        final long chunk = 524288L;
+        long total = knownSize;
+        long pos = 0;
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dest)) {
+            while (true) {
+                long end = total > 0 ? Math.min(total - 1, pos + chunk - 1) : (pos + chunk - 1);
+                byte[] data = null;
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    HttpURLConnection conn = null;
+                    try {
+                        conn = (HttpURLConnection) new URL(url).openConnection();
+                        conn.setConnectTimeout(10000);
+                        conn.setReadTimeout(20000);
+                        conn.setRequestProperty("User-Agent", ua);
+                        conn.setRequestProperty("Accept-Encoding", "identity");
+                        conn.setRequestProperty("Range", "bytes=" + pos + "-" + end);
+                        int code = conn.getResponseCode();
+                        if (code != 206 && code != 200) throw new java.io.IOException("HTTP " + code);
+                        if (total <= 0) {
+                            String cr = conn.getHeaderField("Content-Range");
+                            if (cr != null && cr.lastIndexOf('/') > 0) {
+                                long p = parseLongSafe(cr.substring(cr.lastIndexOf('/') + 1).trim(), -1L);
+                                if (p > 0) total = p;
+                            } else if (code == 200 && conn.getContentLengthLong() > 0) {
+                                total = conn.getContentLengthLong();
+                            }
+                        }
+                        try (InputStream is = conn.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream((int) chunk)) {
+                            byte[] buf = new byte[32768];
+                            int r;
+                            while ((r = is.read(buf)) != -1) bos.write(buf, 0, r);
+                            data = bos.toByteArray();
+                        }
+                        break;
+                    } catch (Exception e) {
+                        if (attempt == 2) throw e;
+                        Thread.sleep(250L);
+                    } finally {
+                        if (conn != null) conn.disconnect();
+                    }
+                }
+                if (data == null || data.length == 0) break;
+                fos.write(data);
+                pos += data.length;
+                if (total > 0 && pos >= total) break;
+                if (data.length < chunk) break;
+            }
+        }
+    }
+
+    /** Muxes separate H.264 MP4 video + AAC M4A audio into a single standard MP4 via Android MediaMuxer. */
+    private static void muxVideoAndAudio(java.io.File videoFile, java.io.File audioFile, java.io.File outFile) throws Exception {
+        android.media.MediaExtractor ve = new android.media.MediaExtractor();
+        android.media.MediaExtractor ae = new android.media.MediaExtractor();
+        android.media.MediaMuxer muxer = null;
+        try {
+            ve.setDataSource(videoFile.getAbsolutePath());
+            ae.setDataSource(audioFile.getAbsolutePath());
+            int vSrc = -1, aSrc = -1;
+            for (int i = 0; i < ve.getTrackCount(); i++) {
+                String mime = ve.getTrackFormat(i).getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) { vSrc = i; break; }
+            }
+            for (int i = 0; i < ae.getTrackCount(); i++) {
+                String mime = ae.getTrackFormat(i).getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) { aSrc = i; break; }
+            }
+            if (vSrc < 0 || aSrc < 0) throw new java.io.IOException("Missing video/audio track");
+            ve.selectTrack(vSrc);
+            ae.selectTrack(aSrc);
+            muxer = new android.media.MediaMuxer(outFile.getAbsolutePath(), android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int vDst = muxer.addTrack(ve.getTrackFormat(vSrc));
+            int aDst = muxer.addTrack(ae.getTrackFormat(aSrc));
+            muxer.start();
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(512 * 1024);
+            android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+            while (true) {
+                info.offset = 0;
+                info.size = ve.readSampleData(buf, 0);
+                if (info.size < 0) break;
+                info.presentationTimeUs = ve.getSampleTime();
+                info.flags = ve.getSampleFlags();
+                muxer.writeSampleData(vDst, buf, info);
+                ve.advance();
+            }
+            while (true) {
+                info.offset = 0;
+                info.size = ae.readSampleData(buf, 0);
+                if (info.size < 0) break;
+                info.presentationTimeUs = ae.getSampleTime();
+                info.flags = ae.getSampleFlags();
+                muxer.writeSampleData(aDst, buf, info);
+                ae.advance();
+            }
+            muxer.stop();
+        } finally {
+            try { ve.release(); } catch (Throwable ignored) {}
+            try { ae.release(); } catch (Throwable ignored) {}
+            if (muxer != null) { try { muxer.release(); } catch (Throwable ignored) {} }
         }
     }
 
@@ -1246,31 +1609,91 @@ final class YouTubeHub {
 
         @Override void build() {
             MainActivity m = main;
+            boolean signedIn = isGoogleSignedIn(m);
+            MicroGInfo mg = detectMicroGProvider(m);
 
-            // 1. Search & Direct URL Bar Card
-            Widgets.Group searchGroup = new Widgets.Group(m, null);
-            LinearLayout sRow = new LinearLayout(m);
-            sRow.setOrientation(LinearLayout.HORIZONTAL);
-            sRow.setGravity(Gravity.CENTER_VERTICAL);
-            sRow.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(12), Ui.dp(10));
-            sRow.addView(new Icons.IconView(m, Icons.YOUTUBE, 22, 0xFFFF0033), new LinearLayout.LayoutParams(Ui.dp(28), Ui.dp(28)));
+            // 1. Authentic YouTube-style Top Account & Brand Strip (avoid duplicating Page's big "YouTube" title)
+            LinearLayout topStrip = new LinearLayout(m);
+            topStrip.setOrientation(LinearLayout.HORIZONTAL);
+            topStrip.setGravity(Gravity.CENTER_VERTICAL);
+            topStrip.setPadding(Ui.dp(18), Ui.dp(0), Ui.dp(18), Ui.dp(10));
+
+            // Red YouTube play badge + subtitle status
+            LinearLayout brand = new LinearLayout(m);
+            brand.setGravity(Gravity.CENTER_VERTICAL);
+            FrameLayout ytLogo = new FrameLayout(m);
+            ytLogo.setBackground(Ui.round(0xFFFF0033, 8));
+            ytLogo.addView(new Icons.IconView(m, Icons.PLAY, 13, 0xFFFFFFFF),
+                    new FrameLayout.LayoutParams(Ui.dp(15), Ui.dp(15), Gravity.CENTER));
+            brand.addView(ytLogo, new LinearLayout.LayoutParams(Ui.dp(30), Ui.dp(20)));
+            TextView brandTxt = Ui.text(m, signedIn ? getSignedInLabel(m) : "플레이 시네마 피드", 13.5f, Ui.semibold, Ui.text2());
+            brandTxt.setPadding(Ui.dp(8), 0, Ui.dp(8), 0);
+            brand.addView(brandTxt);
+            topStrip.addView(brand, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            // microG direct account sign-in pill (actually picks microG account & signs in!)
+            if (mg != null && mg.isMicroG) {
+                TextView mgBtn = Ui.text(m, signedIn ? "microG ✓" : "microG 로그인", 12f, Ui.semibold, signedIn ? 0xFF34C759 : Ui.ACCENT);
+                mgBtn.setPadding(Ui.dp(11), Ui.dp(6), Ui.dp(11), Ui.dp(6));
+                GradientDrawable mbg = Ui.round(Ui.dark ? 0x22FFFFFF : 0x12000000, 100);
+                mbg.setStroke(Math.max(1, Ui.dp(0.8f)), signedIn ? 0x5534C759 : Ui.alpha(Ui.ACCENT, 0.35f));
+                mgBtn.setBackground(mbg);
+                mgBtn.setOnClickListener(v -> startMicroGAccountLogin(m, this::rebuild));
+                Ui.press(mgBtn, 0.94f);
+                LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                mlp.rightMargin = Ui.dp(8);
+                topStrip.addView(mgBtn, mlp);
+            }
+
+            // Crisp Account pill button (Google / microG session)
+            TextView avatarBtn = Ui.text(m, signedIn ? "계정" : m.getString(R.string.yt_google_signin), 12f, Ui.semibold, 0xFFFFFFFF);
+            avatarBtn.setPadding(Ui.dp(12), Ui.dp(6), Ui.dp(12), Ui.dp(6));
+            avatarBtn.setBackground(Ui.round(signedIn ? 0xFF34C759 : Ui.ACCENT, 100));
+            avatarBtn.setOnClickListener(v -> {
+                if (signedIn) {
+                    List<GlassMenu.Entry> es = new ArrayList<>();
+                    es.add(new GlassMenu.Entry(getSignedInLabel(m), Icons.INFO, true, null));
+                    if (mg != null && mg.isMicroG) {
+                        es.add(new GlassMenu.Entry(m.getString(R.string.yt_microg_signin), Icons.YOUTUBE, false, () -> startMicroGAccountLogin(m, this::rebuild)));
+                    }
+                    es.add(new GlassMenu.Entry(m.getString(R.string.yt_google_signout), Icons.CLOSE, false, () -> { signOutGoogle(m); rebuild(); }));
+                    float[] o = Glass.abs(v);
+                    GlassMenu.show(m, new RectF(o[0], o[1], o[0] + v.getWidth(), o[1] + v.getHeight()), es);
+                } else {
+                    showGoogleLoginDialog(m, this::rebuild);
+                }
+            });
+            Ui.press(avatarBtn, 0.92f);
+            topStrip.addView(avatarBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            content.addView(topStrip, Widgets.MW);
+
+            // 2. Floating Liquid Glass YouTube Search Pill
+            LinearLayout searchPill = new LinearLayout(m);
+            searchPill.setOrientation(LinearLayout.HORIZONTAL);
+            searchPill.setGravity(Gravity.CENTER_VERTICAL);
+            searchPill.setPadding(Ui.dp(14), Ui.dp(8), Ui.dp(8), Ui.dp(8));
+            GradientDrawable sBg = Ui.round(Ui.dark ? 0xCC1E2028 : 0xF2FFFFFF, 100);
+            sBg.setStroke(Math.max(1, Ui.dp(1)), Ui.dark ? 0x33FFFFFF : 0x1A000000);
+            searchPill.setBackground(sBg);
+            searchPill.setElevation(Ui.dpf(2));
+            searchPill.addView(new Icons.IconView(m, Icons.SEARCH, 18, Ui.text2()), new LinearLayout.LayoutParams(Ui.dp(22), Ui.dp(22)));
 
             EditText et = new EditText(m);
             et.setBackground(null);
             et.setSingleLine(true);
             et.setHint(m.getString(R.string.yt_search_hint));
             et.setText(currentQuery);
-            et.setTextSize(15f);
+            et.setTextSize(14.5f);
             et.setTextColor(Ui.text());
             et.setHintTextColor(Ui.text3());
-            et.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            et.setPadding(Ui.dp(10), Ui.dp(5), Ui.dp(10), Ui.dp(5));
             et.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
             et.setInputType(InputType.TYPE_CLASS_TEXT);
-            sRow.addView(et, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            searchPill.addView(et, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            TextView goBtn = Ui.text(m, m.getString(R.string.search), 13.5f, Ui.semibold, 0xFFFFFFFF);
-            goBtn.setPadding(Ui.dp(14), Ui.dp(8), Ui.dp(14), Ui.dp(8));
-            goBtn.setBackground(Ui.round(Ui.ACCENT, 100));
+            TextView goBtn = Ui.text(m, m.getString(R.string.search), 13f, Ui.semibold, 0xFFFFFFFF);
+            goBtn.setPadding(Ui.dp(14), Ui.dp(7), Ui.dp(14), Ui.dp(7));
+            goBtn.setBackground(Ui.round(0xFFFF0033, 100));
             Runnable triggerSearch = () -> {
                 String q = et.getText().toString().trim();
                 String vid = extractVideoId(q);
@@ -1284,61 +1707,14 @@ final class YouTubeHub {
             goBtn.setOnClickListener(v -> triggerSearch.run());
             et.setOnEditorActionListener((v, id, ev) -> { triggerSearch.run(); return true; });
             Ui.press(goBtn, 0.94f);
-            sRow.addView(goBtn);
-            searchGroup.addCustom(sRow);
-            content.addView(searchGroup, Widgets.MW);
+            searchPill.addView(goBtn);
+            LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            spLp.setMargins(Ui.dp(16), 0, Ui.dp(16), Ui.dp(10));
+            content.addView(searchPill, spLp);
 
-            // 2. Google & microG Account Bar
-            Widgets.Group accGroup = new Widgets.Group(m, null);
-            LinearLayout aRow = new LinearLayout(m);
-            aRow.setOrientation(LinearLayout.HORIZONTAL);
-            aRow.setGravity(Gravity.CENTER_VERTICAL);
-            aRow.setPadding(Ui.dp(16), Ui.dp(11), Ui.dp(14), Ui.dp(11));
-
-            boolean signedIn = isGoogleSignedIn(m);
-            MicroGInfo mg = detectMicroGProvider(m);
-            LinearLayout aText = new LinearLayout(m);
-            aText.setOrientation(LinearLayout.VERTICAL);
-            String titleStr = signedIn ? getSignedInLabel(m) : m.getString(R.string.yt_account_title);
-            String subStr = signedIn
-                    ? (mg != null && mg.isMicroG ? m.getString(R.string.yt_microg_detected, mg.label) : "YouTube 세션 활성 · 맞춤 피드 동기화")
-                    : (mg != null && mg.isMicroG ? m.getString(R.string.yt_microg_detected, mg.label) : m.getString(R.string.yt_google_guest));
-            aText.addView(Ui.text(m, titleStr, 14f, Ui.semibold, Ui.text()));
-            TextView subTv = Ui.text(m, subStr, 12f, Ui.regular, signedIn ? 0xFF34C759 : Ui.text2());
-            aText.addView(subTv);
-            aRow.addView(aText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-            if (mg != null && mg.isMicroG) {
-                TextView mgBtn = Ui.text(m, "microG", 12f, Ui.semibold, Ui.ACCENT);
-                mgBtn.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
-                mgBtn.setBackground(Ui.round(Ui.dark ? 0x22FFFFFF : 0x14000000, 100));
-                mgBtn.setOnClickListener(v -> openMicroGSettings(m));
-                LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                mlp.rightMargin = Ui.dp(8);
-                aRow.addView(mgBtn, mlp);
-            }
-
-            TextView loginBtn = Ui.text(m,
-                    m.getString(signedIn ? R.string.yt_google_signout : R.string.yt_google_signin),
-                    12.5f, Ui.semibold, signedIn ? Ui.text() : 0xFFFFFFFF);
-            loginBtn.setPadding(Ui.dp(13), Ui.dp(7), Ui.dp(13), Ui.dp(7));
-            loginBtn.setBackground(Ui.round(signedIn ? (Ui.dark ? 0x28FFFFFF : 0x18000000) : Ui.ACCENT, 100));
-            loginBtn.setOnClickListener(v -> {
-                if (signedIn) {
-                    signOutGoogle(m);
-                    rebuild();
-                } else {
-                    showGoogleLoginDialog(m, this::rebuild);
-                }
-            });
-            Ui.press(loginBtn, 0.94f);
-            aRow.addView(loginBtn);
-            accGroup.addCustom(aRow);
-            content.addView(accGroup, Widgets.MW);
-
-            // 3. Category Chips
+            // 3. YouTube Category Chip Bar
             String[] cats = {
-                    m.getString(R.string.yt_cat_trending),
+                    m.getString(R.string.yt_cat_all),
                     m.getString(R.string.yt_cat_music),
                     m.getString(R.string.yt_cat_gaming),
                     m.getString(R.string.yt_cat_film),
@@ -1352,18 +1728,18 @@ final class YouTubeHub {
             });
             content.addView(chips, Widgets.MW);
 
-            // 4. Status & Source indicator
+            // 4. Compact Status & Source Bar
             LinearLayout metaRow = new LinearLayout(m);
             metaRow.setGravity(Gravity.CENTER_VERTICAL);
-            metaRow.setPadding(Ui.dp(22), Ui.dp(4), Ui.dp(22), Ui.dp(6));
-            statusLabel = Ui.text(m, m.getString(R.string.yt_loading), 12.5f, Ui.medium, Ui.text2());
+            metaRow.setPadding(Ui.dp(20), Ui.dp(4), Ui.dp(20), Ui.dp(8));
+            statusLabel = Ui.text(m, m.getString(R.string.yt_loading), 12f, Ui.medium, Ui.text2());
             metaRow.addView(statusLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            TextView cfgBtn = Ui.text(m, m.getString(R.string.yt_source_settings), 12.5f, Ui.semibold, Ui.ACCENT);
+            TextView cfgBtn = Ui.text(m, m.getString(R.string.yt_source_settings), 12f, Ui.semibold, Ui.ACCENT);
             cfgBtn.setOnClickListener(v -> showSourceSettingsSheet(m));
             metaRow.addView(cfgBtn);
             content.addView(metaRow, Widgets.MW);
 
-            // 5. Video Grid Host
+            // 5. YouTube Feed Host
             resultsHost = new LinearLayout(m);
             resultsHost.setOrientation(LinearLayout.VERTICAL);
             content.addView(resultsHost, Widgets.MW);
@@ -1382,8 +1758,7 @@ final class YouTubeHub {
                     statusLabel.setText(main.getString(R.string.yt_empty));
                     return;
                 }
-                statusLabel.setText(src + " · " + videos.size() + "개 동영상"
-                        + (isNewPipeInstalled(main) ? " · NewPipe 연동됨" : ""));
+                statusLabel.setText(src + " · " + videos.size() + "개 동영상");
                 renderVideoCards(videos);
             };
             if (!currentQuery.isEmpty()) searchVideos(main, currentQuery, cb);
@@ -1392,16 +1767,18 @@ final class YouTubeHub {
 
         private void renderVideoCards(List<YtVideo> videos) {
             MainActivity m = main;
-            int cols = Pages.gridColumns(m);
-            int gap = Ui.dp(12);
-            int pad = Ui.dp(18);
-            int avail = Widgets.contentW(m) - pad * 2 - gap * (cols - 1);
-            int cardW = Math.max(Ui.dp(120), avail / cols);
+            // Authentic YouTube mobile feed: 1-column full-width 16:9 cards on phones, 2-3 columns on tablets/foldables
+            int cw = Widgets.contentW(m);
+            int cols = cw / Ui.density >= 840 ? 3 : (cw / Ui.density >= 560 ? 2 : 1);
+            int gap = Ui.dp(14);
+            int pad = Ui.dp(16);
+            int avail = cw - pad * 2 - gap * (cols - 1);
+            int cardW = Math.max(Ui.dp(160), avail / cols);
 
             for (int i = 0; i < videos.size(); i += cols) {
                 LinearLayout row = new LinearLayout(m);
                 row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setPadding(pad, 0, pad, Ui.dp(16));
+                row.setPadding(pad, 0, pad, Ui.dp(18));
                 for (int c = 0; c < cols; c++) {
                     int idx = i + c;
                     if (idx < videos.size()) {
@@ -1421,52 +1798,87 @@ final class YouTubeHub {
             }
         }
 
+        private static int channelColor(String author) {
+            int[] palette = {0xFFE53935, 0xFF1E88E5, 0xFF43A047, 0xFF8E24AA, 0xFFFB8C00, 0xFF00ACC1, 0xFFD81B60};
+            int h = author == null ? 0 : Math.abs(author.hashCode());
+            return palette[h % palette.length];
+        }
+
         private View buildYtCard(MainActivity m, YtVideo v, int widthPx) {
             int h = (int) (widthPx * 9f / 16f);
-            float rad = Ui.gStyle ? 20f : 14f;
-            LinearLayout box = new LinearLayout(m);
-            box.setOrientation(LinearLayout.VERTICAL);
+            float rad = Ui.gStyle ? 18f : 16f;
+            LinearLayout card = new LinearLayout(m);
+            card.setOrientation(LinearLayout.VERTICAL);
 
+            // 16:9 Rounded Thumbnail with duration pill
             FrameLayout thumbBox = new FrameLayout(m);
             YtThumbView tv = new YtThumbView(m, rad);
             tv.bind(v);
             thumbBox.addView(tv, new FrameLayout.LayoutParams(widthPx, h));
 
-            TextView ytBadge = Widgets.pillBadge(m, "YouTube", 0xCCFF0033, 0xFFFFFFFF);
-            FrameLayout.LayoutParams ylp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-            ylp.setMargins(Ui.dp(8), Ui.dp(8), 0, 0);
-            thumbBox.addView(ytBadge, ylp);
-
             if (v.durationSec > 0) {
-                TextView dur = Widgets.pillBadge(m, Ui.time(v.durationSec * 1000L), 0xB8000000, 0xFFFFFFFF);
+                TextView dur = Widgets.pillBadge(m, Ui.time(v.durationSec * 1000L), 0xCC000000, 0xFFFFFFFF);
                 FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-                dlp.setMargins(0, 0, Ui.dp(8), Ui.dp(8));
+                dlp.setMargins(0, 0, Ui.dp(10), Ui.dp(10));
                 thumbBox.addView(dur, dlp);
             }
+            card.addView(thumbBox, new LinearLayout.LayoutParams(widthPx, h));
 
-            box.addView(thumbBox, new LinearLayout.LayoutParams(widthPx, h));
-            TextView title = Ui.text(m, v.title, 13.5f, Ui.semibold, Ui.text());
+            // Authentic YouTube metadata row: Channel Avatar Circle + 2-line Title + Meta + 1-tap Download & More buttons
+            LinearLayout metaRow = new LinearLayout(m);
+            metaRow.setOrientation(LinearLayout.HORIZONTAL);
+            metaRow.setGravity(Gravity.TOP);
+            metaRow.setPadding(Ui.dp(2), Ui.dp(11), Ui.dp(0), Ui.dp(2));
+
+            String initial = (v.author != null && !v.author.isEmpty()) ? v.author.substring(0, 1).toUpperCase(Locale.US) : "Y";
+            TextView chAvatar = Ui.text(m, initial, 14f, Ui.bold, 0xFFFFFFFF);
+            chAvatar.setGravity(Gravity.CENTER);
+            chAvatar.setBackground(Ui.round(channelColor(v.author), 100));
+            LinearLayout.LayoutParams avLp = new LinearLayout.LayoutParams(Ui.dp(36), Ui.dp(36));
+            avLp.topMargin = Ui.dp(2);
+            avLp.rightMargin = Ui.dp(11);
+            metaRow.addView(chAvatar, avLp);
+
+            LinearLayout txtCol = new LinearLayout(m);
+            txtCol.setOrientation(LinearLayout.VERTICAL);
+            TextView title = Ui.text(m, v.title, 14.5f, Ui.semibold, Ui.text());
             title.setSingleLine(false);
             title.setMaxLines(2);
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(widthPx, ViewGroup.LayoutParams.WRAP_CONTENT);
-            tlp.topMargin = Ui.dp(7);
-            box.addView(title, tlp);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            txtCol.addView(title, Widgets.MW);
 
             StringBuilder meta = new StringBuilder(v.author);
             if (!v.views.isEmpty()) meta.append(" · ").append(v.views);
-            else if (!v.published.isEmpty()) meta.append(" · ").append(v.published);
-            TextView sub = Ui.text(m, meta.toString(), 11.5f, Ui.regular, Ui.text2());
-            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(widthPx, ViewGroup.LayoutParams.WRAP_CONTENT);
-            slp.topMargin = Ui.dp(2);
-            box.addView(sub, slp);
+            if (!v.published.isEmpty()) meta.append(" · ").append(v.published);
+            TextView sub = Ui.text(m, meta.toString(), 12f, Ui.regular, Ui.text2());
+            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            slp.topMargin = Ui.dp(3);
+            txtCol.addView(sub, slp);
+            metaRow.addView(txtCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            box.setOnClickListener(vv -> openVideo(m, v));
-            box.setOnLongClickListener(vv -> {
+            // Quick 1-tap Download pill button
+            TextView dlBtn = Ui.text(m, "저장", 11.5f, Ui.semibold, Ui.ACCENT);
+            dlBtn.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            dlBtn.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.14f), 100));
+            dlBtn.setOnClickListener(vv -> showDownloadSheet(m, v, null, vv));
+            Ui.press(dlBtn, 0.90f);
+            LinearLayout.LayoutParams dlLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            dlLp.leftMargin = Ui.dp(6);
+            metaRow.addView(dlBtn, dlLp);
+
+            Icons.IconView moreBtn = new Icons.IconView(m, Icons.MORE, 18, Ui.text2());
+            moreBtn.setBackground(Widgets.ripple());
+            moreBtn.setOnClickListener(vv -> showYtVideoMenu(m, v, vv));
+            metaRow.addView(moreBtn, new LinearLayout.LayoutParams(Ui.dp(32), Ui.dp(32)));
+
+            card.addView(metaRow, new LinearLayout.LayoutParams(widthPx, ViewGroup.LayoutParams.WRAP_CONTENT));
+            card.setOnClickListener(vv -> openVideo(m, v));
+            card.setOnLongClickListener(vv -> {
                 showYtVideoMenu(m, v, vv);
                 return true;
             });
-            Ui.press(box, Ui.gStyle ? 0.98f : 0.96f);
-            return box;
+            Ui.press(card, Ui.gStyle ? 0.985f : 0.97f);
+            return card;
         }
     }
 
@@ -1475,6 +1887,7 @@ final class YouTubeHub {
         RectF r = new RectF(o[0], o[1], o[0] + anchorView.getWidth(), o[1] + anchorView.getHeight());
         List<GlassMenu.Entry> es = new ArrayList<>();
         es.add(new GlassMenu.Entry(m.getString(R.string.yt_play_in_app), Icons.PLAY, false, () -> openVideo(m, v)));
+        es.add(new GlassMenu.Entry(m.getString(R.string.yt_download), Icons.FOLDER, false, () -> showDownloadSheet(m, v, null, anchorView)));
         if (isNewPipeInstalled(m)) {
             es.add(new GlassMenu.Entry(m.getString(R.string.yt_open_newpipe), Icons.YOUTUBE, false, () -> openInNewPipe(m, v.id)));
         }
@@ -1511,10 +1924,10 @@ final class YouTubeHub {
         });
         btnRow.addView(gBtn);
         if (mg != null && mg.isMicroG) {
-            TextView mBtn = Ui.text(m, m.getString(R.string.yt_microg_open), 13f, Ui.semibold, Ui.ACCENT);
+            TextView mBtn = Ui.text(m, m.getString(R.string.yt_microg_signin), 13f, Ui.semibold, Ui.ACCENT);
             mBtn.setPadding(Ui.dp(14), Ui.dp(9), Ui.dp(14), Ui.dp(9));
             mBtn.setBackground(Ui.round(Ui.dark ? 0x22FFFFFF : 0x14000000, 12));
-            mBtn.setOnClickListener(v -> openMicroGSettings(m));
+            mBtn.setOnClickListener(v -> startMicroGAccountLogin(m, m::reloadAll));
             LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             mlp.leftMargin = Ui.dp(8);
             btnRow.addView(mBtn, mlp);
@@ -1625,7 +2038,7 @@ final class YouTubeHub {
         private final ProgressBar spinner;
         private final TextView statusPill;
         private final FrameLayout chrome;
-        private final TextView titleView, authorView, speedBadge, timeLabel, modeBtn;
+        private final TextView titleView, authorView, speedBadge, qualityBadge, timeLabel, modeBtn;
         private final Widgets.Slider seekBar;
         private final Icons.IconView playBtn;
 
@@ -1634,6 +2047,8 @@ final class YouTubeHub {
         private boolean videoReady = false, audioReady = false;
         private Surface surface;
         private ResolvedStream currentStream;
+        private QualityOption activeQuality;
+        private int pendingSeekMs = 0;
         private boolean webMode = false;
         private boolean prepared = false;
         private boolean playing = false;
@@ -1791,12 +2206,31 @@ final class YouTubeHub {
             timeLabel.setPadding(Ui.dp(6), 0, Ui.dp(6), 0);
             botBar.addView(timeLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            speedBadge = Ui.text(m, "1.0x", 12.5f, Ui.bold, 0xFFFFFFFF);
+            speedBadge = Ui.text(m, "1.0x", 12f, Ui.bold, 0xFFFFFFFF);
             speedBadge.setGravity(Gravity.CENTER);
-            speedBadge.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            speedBadge.setPadding(Ui.dp(9), Ui.dp(6), Ui.dp(9), Ui.dp(6));
             speedBadge.setBackground(Ui.round(0x28FFFFFF, 100));
             speedBadge.setOnClickListener(this::showSpeedSheet);
             botBar.addView(speedBadge);
+
+            qualityBadge = Ui.text(m, "HD", 12f, Ui.bold, 0xFFFFFFFF);
+            qualityBadge.setGravity(Gravity.CENTER);
+            qualityBadge.setPadding(Ui.dp(9), Ui.dp(6), Ui.dp(9), Ui.dp(6));
+            qualityBadge.setBackground(Ui.round(0x33FFFFFF, 100));
+            qualityBadge.setOnClickListener(this::showQualitySheet);
+            LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            qlp.leftMargin = Ui.dp(6);
+            botBar.addView(qualityBadge, qlp);
+
+            TextView dlPill = Ui.text(m, "저장", 12f, Ui.bold, 0xFFFFFFFF);
+            dlPill.setGravity(Gravity.CENTER);
+            dlPill.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            dlPill.setBackground(Ui.round(Ui.alpha(Ui.ACCENT, 0.85f), 100));
+            dlPill.setOnClickListener(vv -> showDownloadSheet(m, video, currentStream, vv));
+            Ui.press(dlPill, 0.90f);
+            LinearLayout.LayoutParams dllp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            dllp.leftMargin = Ui.dp(6);
+            botBar.addView(dlPill, dllp);
 
             if (isNewPipeInstalled(m)) {
                 TextView npBtn = Ui.text(m, "NewPipe", 12f, Ui.bold, 0xFFFFFFFF);
@@ -1829,6 +2263,13 @@ final class YouTubeHub {
                     video.description = stream.description;
                 }
                 if (stream.url != null && !stream.url.isEmpty()) {
+                    if (!stream.qualities.isEmpty()) {
+                        activeQuality = stream.qualities.get(0);
+                        for (QualityOption qo : stream.qualities) {
+                            if (qo.label.equals(stream.qualityLabel)) { activeQuality = qo; break; }
+                        }
+                    }
+                    qualityBadge.setText(shortQualityTag(stream.qualityLabel));
                     authorView.setText(video.author + " · " + stream.qualityLabel);
                     startNativeStream(stream);
                 } else {
@@ -1954,9 +2395,68 @@ final class YouTubeHub {
                 }
             } catch (Throwable ignored) {}
             mp.start();
-            if (dual && audioMp != null) audioMp.start();
+            if (pendingSeekMs > 0) {
+                try { mp.seekTo(pendingSeekMs); } catch (Throwable ignored) {}
+            }
+            if (dual && audioMp != null) {
+                if (pendingSeekMs > 0) {
+                    try { audioMp.seekTo(pendingSeekMs); } catch (Throwable ignored) {}
+                }
+                audioMp.start();
+            }
+            pendingSeekMs = 0;
             MAIN.removeCallbacks(tickRun);
             MAIN.post(tickRun);
+        }
+
+        private static String shortQualityTag(String lbl) {
+            if (lbl == null || lbl.isEmpty()) return "HD";
+            if (lbl.contains("자동") || lbl.contains("HLS")) return "자동";
+            int sp = lbl.indexOf(' ');
+            return sp > 0 ? lbl.substring(0, sp) : lbl;
+        }
+
+        private void showQualitySheet(View anchor) {
+            if (currentStream == null || currentStream.qualities.isEmpty()) {
+                Toast.makeText(m, "화질 목록을 불러오는 중입니다", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            List<QualityOption> opts = new ArrayList<>();
+            for (QualityOption q : currentStream.qualities) {
+                if (!q.audioOnly) opts.add(q);
+            }
+            if (opts.isEmpty()) return;
+            String[] labels = new String[opts.size()];
+            int sel = 0;
+            for (int i = 0; i < opts.size(); i++) {
+                QualityOption q = opts.get(i);
+                labels[i] = q.label;
+                if (activeQuality != null && q.label.equals(activeQuality.label)) sel = i;
+            }
+            Widgets.pickSheet(m, anchor, m.getString(R.string.yt_quality), labels, sel, idx -> {
+                QualityOption picked = opts.get(idx);
+                activeQuality = picked;
+                if (mp != null && prepared) {
+                    try { pendingSeekMs = mp.getCurrentPosition(); } catch (Throwable ignored) {}
+                }
+                currentStream.url = picked.videoUrl;
+                currentStream.videoContentLength = picked.videoContentLength;
+                currentStream.audioUrl = picked.audioUrl;
+                currentStream.audioContentLength = picked.audioContentLength;
+                currentStream.qualityLabel = picked.label;
+                currentStream.clientUsed = picked.clientUsed;
+                currentStream.hls = picked.hls;
+                currentStream.dualTrack = picked.dualTrack;
+                qualityBadge.setText(shortQualityTag(picked.label));
+                authorView.setText(video.author + " · " + picked.label);
+                if (webMode) switchPlaybackMode(false);
+                else {
+                    spinner.setVisibility(VISIBLE);
+                    statusPill.setText(picked.label + " 전환 중…");
+                    statusPill.setVisibility(VISIBLE);
+                    startNativeStream(currentStream);
+                }
+            });
         }
 
         private void switchPlaybackMode(boolean toWeb) {
@@ -2099,6 +2599,10 @@ final class YouTubeHub {
             float[] o = Glass.abs(anchor);
             RectF r = new RectF(o[0], o[1], o[0] + anchor.getWidth(), o[1] + anchor.getHeight());
             List<GlassMenu.Entry> es = new ArrayList<>();
+            es.add(new GlassMenu.Entry(m.getString(R.string.yt_quality) + " (" + qualityBadge.getText() + ")",
+                    Icons.ASPECT, false, () -> showQualitySheet(anchor)));
+            es.add(new GlassMenu.Entry(m.getString(R.string.yt_download),
+                    Icons.FOLDER, false, () -> showDownloadSheet(m, video, currentStream, anchor)));
             es.add(new GlassMenu.Entry(m.getString(R.string.psa_title) + " (" + NpuVideo.summary(m) + ")",
                     Icons.PROSCALER, NpuVideo.enabled(m), () -> NpuVideo.showQuickSheet(m, r, null)));
             es.add(new GlassMenu.Entry(m.getString(R.string.bpa_title) + " (" + NpuAudio.summary(m) + ")",
