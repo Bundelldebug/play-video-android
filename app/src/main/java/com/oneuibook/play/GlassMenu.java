@@ -162,11 +162,22 @@ final class GlassMenu extends FrameLayout {
         return r;
     }
 
-    private boolean overPlayer() { return main.playerOverlay != null && main.playerOverlay.getVisibility() == VISIBLE; }
+    private boolean overPlayer() {
+        if (main.playerOverlay != null && main.playerOverlay.getVisibility() == VISIBLE) return true;
+        if (main.root != null) {
+            for (int i = 0; i < main.root.getChildCount(); i++) {
+                View ch = main.root.getChildAt(i);
+                if (ch instanceof YouTubeHub.YouTubeOverlay && ch.getVisibility() == VISIBLE) return true;
+            }
+        }
+        return false;
+    }
 
     @Override protected void onMeasure(int w, int h) {
         super.onMeasure(w, h);
-        int maxH = (int) (getMeasuredHeight() * 0.72f);
+        int botInset = Math.max(Ui.navInset, Ui.imeInset);
+        int availH = Math.max(Ui.dp(180), getMeasuredHeight() - Ui.statusInset - botInset - Ui.dp(36));
+        int maxH = Math.min((int) (getMeasuredHeight() * 0.78f), (int) (availH * 0.92f));
         if (sheet) {
             int sw = Math.min(getMeasuredWidth() - Ui.dp(24), Ui.dp(540));
             scroller.measure(MeasureSpec.makeMeasureSpec(sw, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST));
@@ -182,7 +193,7 @@ final class GlassMenu extends FrameLayout {
         int w = scroller.getMeasuredWidth(), h = scroller.getMeasuredHeight();
         float W = getWidth(), H = getHeight();
         if (sheet) {
-            float left = (W - w) / 2f, bottom = H - Ui.navInset - Ui.dpf(12);
+            float left = (W - w) / 2f, bottom = H - Math.max(Ui.navInset, Ui.imeInset) - Ui.dpf(12);
             target.set(left, Math.max(Ui.statusInset + Ui.dpf(24), bottom - h), left + w, bottom);
             scroller.layout((int) target.left, (int) target.top, (int) target.right, (int) target.bottom);
             if (!closing && p.target == 0f && p.value == 0f) p.to(1f);

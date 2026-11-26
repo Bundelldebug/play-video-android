@@ -35,7 +35,7 @@ import java.util.Locale;
  * in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.11";
+    static final String VERSION = "9.5.12";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;
@@ -137,6 +137,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             Ui.navInset = nav;
             Ui.cutoutLeft = cl;
             Ui.cutoutRight = cr;
+            boolean imeChanged = ime != Ui.imeInset;
             Ui.imeInset = ime;
             dock.setImeOffset(ime);
             fitHeader();
@@ -144,6 +145,12 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
                 for (NavStack s : tabs) if (s != null) s.applyInsets();
                 if (searchPage != null) searchPage.applyInsets();
                 playerOverlay.onInsetsChanged();
+            }
+            if (imeChanged || changed) {
+                for (int i = 0; i < root.getChildCount(); i++) {
+                    View ch = root.getChildAt(i);
+                    if (ch instanceof GlassMenu) ch.requestLayout();
+                }
             }
             return WindowInsets.CONSUMED;
         });
@@ -220,18 +227,23 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     @Override public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         Ui.init(this, prefs(this));
-        if (playerOverlay.isOpen()) {
-            playerOverlay.onInsetsChanged();
-            playerOverlay.applyVideoTransform();
-            return;
-        }
-        // Smooth foldable fold/unfold or rotation handoff when browsing library
-        lastFrame = captureFrame();
-        fitHeader();
-        dock.requestLayout();
-        for (NavStack s : tabs) if (s != null) { s.applyInsets(); s.rebuildAll(); }
-        if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
-        else if (!tabletUi() && sidebar != null) closeSidebar();
+        root.post(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            fitHeader();
+            dock.requestLayout();
+            for (NavStack s : tabs) if (s != null) { s.applyInsets(); s.rebuildAll(); }
+            if (searchPage != null) { searchPage.applyInsets(); searchPage.rebuild(); }
+            if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
+            else if (!tabletUi() && sidebar != null) {
+                applySidebar(0f, Sidebar.widthFor(Ui.screenW));
+                root.removeView(sidebar);
+                sidebar = null;
+            }
+            if (playerOverlay.isOpen()) {
+                playerOverlay.onInsetsChanged();
+                playerOverlay.applyVideoTransform();
+            }
+        });
     }
 
     @Override protected void onUserLeaveHint() {
@@ -244,6 +256,12 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     @Override public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
         playerOverlay.setPipMode(isInPictureInPictureMode);
+        if (root != null) {
+            for (int i = 0; i < root.getChildCount(); i++) {
+                View ch = root.getChildAt(i);
+                if (ch instanceof YouTubeHub.YouTubeOverlay) ((YouTubeHub.YouTubeOverlay) ch).setPipMode(isInPictureInPictureMode);
+            }
+        }
     }
 
     void enterPip() {
@@ -640,6 +658,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     }
 
     @Override protected void onDestroy() {
+        if (playerOverlay != null) playerOverlay.destroy();
         if (!isChangingConfigurations()) VideoPlayer.saveCurrentResume();
         super.onDestroy();
     }

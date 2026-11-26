@@ -439,11 +439,30 @@ final class VideoPlayer {
                     case "PLAY_PAUSE": toggle(); break;
                     case "NEXT": next(); break;
                     case "PREV": prev(); break;
-                    case "CLOSE": stopAndClose(); return START_NOT_STICKY;
+                    case "CLOSE":
+                        stopAndClose();
+                        stopForegroundAndSelf();
+                        return START_NOT_STICKY;
                 }
             }
+            if (current == null) {
+                stopForegroundAndSelf();
+                return START_NOT_STICKY;
+            }
             pushNotification();
-            return START_STICKY;
+            return START_NOT_STICKY;
+        }
+
+        private void stopForegroundAndSelf() {
+            try {
+                Notification tmp = new Notification.Builder(this, CH)
+                        .setSmallIcon(R.drawable.ic_stat_play_logo)
+                        .setContentTitle("플레이 종료 중")
+                        .build();
+                startForeground(NOTIF_ID, tmp);
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } catch (Throwable ignored) {}
+            stopSelf();
         }
 
         private void pushNotification() {

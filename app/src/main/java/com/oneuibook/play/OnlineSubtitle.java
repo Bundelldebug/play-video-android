@@ -110,7 +110,7 @@ final class OnlineSubtitle {
         int fg2 = dark ? 0xB3FFFFFF : Ui.text2();
 
         String initialQ = video != null ? cleanQuery(video.title) : "";
-        String movieHash = (video != null && video.path != null) ? computeMovieHash(new File(video.path)) : null;
+        final String[] movieHashRef = {null};
 
         // Search input row
         LinearLayout searchRow = new LinearLayout(m);
@@ -148,10 +148,18 @@ final class OnlineSubtitle {
         TextView[] langChips = new TextView[LANG_CODES.length];
 
         // Status & result list container
-        TextView status = Ui.text(m, movieHash != null
-                ? "파일 해시(" + movieHash.substring(0, 8) + "…) · 제목으로 웹 자막을 찾습니다"
-                : "제목으로 웹 자막을 검색하거나 직접 URL을 입력하세요", 12, Ui.regular, fg2);
+        TextView status = Ui.text(m, "제목으로 웹 자막을 검색하거나 직접 URL을 입력하세요", 12, Ui.regular, fg2);
         status.setPadding(Ui.dp(2), Ui.dp(4), Ui.dp(2), Ui.dp(8));
+        if (video != null && video.path != null) {
+            final String vpath = video.path;
+            new Thread(() -> {
+                String h0 = computeMovieHash(new File(vpath));
+                if (h0 != null) {
+                    movieHashRef[0] = h0;
+                    MAIN.post(() -> status.setText("파일 해시(" + h0.substring(0, 8) + "…) · 제목으로 웹 자막을 찾습니다"));
+                }
+            }, "sub-hash").start();
+        }
 
         LinearLayout resultsBox = new LinearLayout(m);
         resultsBox.setOrientation(LinearLayout.VERTICAL);
@@ -175,7 +183,7 @@ final class OnlineSubtitle {
             }
             status.setText("웹에서 '" + q + "' 자막을 검색하는 중…");
             resultsBox.removeAllViews();
-            searchWeb(m, q, LANG_CODES[langIdx[0]], movieHash, (items, msg) -> {
+            searchWeb(m, q, LANG_CODES[langIdx[0]], movieHashRef[0], (items, msg) -> {
                 status.setText(msg);
                 resultsBox.removeAllViews();
                 for (Item it : items) {
@@ -405,11 +413,15 @@ final class OnlineSubtitle {
                     c.setRequestProperty("Accept", "application/json");
                     c.setRequestProperty("User-Agent", "PlayVideoPlayer v" + MainActivity.VERSION);
                     if (!osKey.isEmpty()) c.setRequestProperty("Api-Key", osKey);
-                    byte[] body = ("{\"file_id\":" + it.fileId + "}").getBytes(StandardCharsets.UTF_8);
-                    c.getOutputStream().write(body);
-                    if (c.getResponseCode() == 200) {
-                        JSONObject resp = new JSONObject(readStr(c.getInputStream()));
-                        dlUrl = resp.optString("link", "");
+                    try {
+                        byte[] body = ("{\"file_id\":" + it.fileId + "}").getBytes(StandardCharsets.UTF_8);
+                        try (java.io.OutputStream os = c.getOutputStream()) { os.write(body); }
+                        if (c.getResponseCode() == 200) {
+                            JSONObject resp = new JSONObject(readStr(c.getInputStream()));
+                            dlUrl = resp.optString("link", "");
+                        }
+                    } finally {
+                        c.disconnect();
                     }
                 }
                 if (dlUrl == null || dlUrl.isEmpty()) throw new Exception("다운로드 링크를 가져올 수 없습니다");

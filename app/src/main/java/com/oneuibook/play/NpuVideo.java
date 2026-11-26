@@ -252,26 +252,29 @@ final class NpuVideo {
 
         box.addView(curve, Widgets.MW);
 
+        android.widget.HorizontalScrollView profScroll = new android.widget.HorizontalScrollView(m);
+        profScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout profRow = new LinearLayout(m);
         profRow.setOrientation(LinearLayout.HORIZONTAL);
         profRow.setPadding(0, Ui.dp(8), 0, Ui.dp(6));
         for (int i = 0; i < PROFILES.length; i++) {
             final int idx = i;
             boolean sel = PROFILES[i].equals(profile(m));
-            TextView ch = Ui.text(m, m.getString(PROFILE_NAMES[i]), 12f, sel ? Ui.bold : Ui.medium, sel ? 0xFFFFFFFF : fg);
+            TextView ch = Ui.text(m, m.getString(PROFILE_NAMES[i]), 12.5f, sel ? Ui.bold : Ui.medium, sel ? 0xFFFFFFFF : fg);
             ch.setGravity(Gravity.CENTER);
-            ch.setPadding(Ui.dp(6), Ui.dp(8), Ui.dp(6), Ui.dp(8));
+            ch.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
             ch.setBackground(Ui.round(sel ? Ui.ACCENT : (dark ? 0x24FFFFFF : Ui.chip()), 100));
             ch.setOnClickListener(v -> {
                 if (!enabled(m)) setEnabled(m, true);
                 setProfile(m, idx);
                 GlassMenu.dismissAny(m.root);
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             if (i > 0) lp.leftMargin = Ui.dp(6);
             profRow.addView(ch, lp);
         }
-        box.addView(profRow, Widgets.MW);
+        profScroll.addView(profRow);
+        box.addView(profScroll, Widgets.MW);
 
         TextView detailBtn = Ui.text(m, "세부 NPU 프로스케일러 · 비트퍼펙트 설정 열기", 13f, Ui.semibold, Ui.ACCENT);
         detailBtn.setGravity(Gravity.CENTER);

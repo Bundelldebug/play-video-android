@@ -153,7 +153,8 @@ final class Header extends View {
         if (vertical) pill.set(right - h, top, right, top + len);
         else pill.set(right - len, top, right, top + h);
         if (icons.length == 0) pill.setEmpty();
-        backRect.set(Ui.dpf(16), top + Ui.dpf(2), Ui.dpf(16) + Ui.dpf(44), top + Ui.dpf(46));
+        float padL = getPaddingLeft();
+        backRect.set(padL + Ui.dpf(16), top + Ui.dpf(2), padL + Ui.dpf(16) + Ui.dpf(44), top + Ui.dpf(46));
     }
 
     @Override protected void onDraw(Canvas c) {
@@ -188,7 +189,8 @@ final class Header extends View {
         if (contentAlpha <= 0.01f) return;
         int fg = Ui.text();
         float bp = backP.value;
-        float titleX = Ui.lerp(Ui.dpf(16), backRect.right + Ui.dpf(Ui.gStyle ? 4 : 12), Ui.clamp(bp, 0f, 1f));
+        float padL = getPaddingLeft();
+        float titleX = Ui.lerp(padL + Ui.dpf(16), backRect.right + Ui.dpf(Ui.gStyle ? 4 : 12), Ui.clamp(bp, 0f, 1f));
         if (bp > 0.01f) {
             float s = Ui.lerp(0.35f, 1f, bp), ba = Ui.clamp(bp, 0f, 1f) * contentAlpha;
             RectF br = tmpRect;

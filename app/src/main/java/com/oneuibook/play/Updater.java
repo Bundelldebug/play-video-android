@@ -251,6 +251,7 @@ final class Updater {
             return;
         }
         DownloadManager dm = a.getSystemService(DownloadManager.class);
+        if (dm == null) { Toast.makeText(a, R.string.upd_failed, Toast.LENGTH_LONG).show(); return; }
         String name = "Play-" + r.version + ".apk";
         java.io.File old = new java.io.File(a.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), name);
         if (old.exists()) old.delete();
@@ -259,14 +260,20 @@ final class Updater {
                 .setMimeType("application/vnd.android.package-archive")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 .setDestinationInExternalFilesDir(a, android.os.Environment.DIRECTORY_DOWNLOADS, name);
+        Context app = a.getApplicationContext();
+        if (activeReceiver != null) {
+            try { app.unregisterReceiver(activeReceiver); } catch (Exception ignored) {}
+            activeReceiver = null;
+        }
         pending = dm.enqueue(q);
         Toast.makeText(a, R.string.upd_downloading, Toast.LENGTH_SHORT).show();
-        Context app = a.getApplicationContext();
+        final long expectedId = pending;
         BroadcastReceiver done = new BroadcastReceiver() {
             @Override public void onReceive(Context c, Intent i) {
                 long id = i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                if (id != pending) return;
+                if (id != expectedId) return;
                 try { app.unregisterReceiver(this); } catch (Exception ignored) {}
+                if (activeReceiver == this) activeReceiver = null;
                 Uri apk = dm.getUriForDownloadedFile(id);
                 if (apk == null) { Toast.makeText(app, R.string.upd_failed, Toast.LENGTH_LONG).show(); return; }
                 Intent in = new Intent(Intent.ACTION_VIEW)
@@ -275,6 +282,8 @@ final class Updater {
                 try { app.startActivity(in); } catch (Exception e) { Toast.makeText(app, R.string.upd_failed, Toast.LENGTH_LONG).show(); }
             }
         };
+        activeReceiver = done;
         app.registerReceiver(done, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED);
     }
+    private static BroadcastReceiver activeReceiver;
 }

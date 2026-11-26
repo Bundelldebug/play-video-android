@@ -480,6 +480,9 @@ final class YouTubeHub {
             b.setNeutralButton(m.getString(R.string.yt_microg_signin), (d, w) -> startMicroGAccountLogin(m, onDone));
         }
         dlgRef[0] = b.show();
+        dlgRef[0].setOnDismissListener(d -> {
+            try { wv.stopLoading(); wv.destroy(); } catch (Throwable ignored) {}
+        });
         android.view.Window dw = dlgRef[0].getWindow();
         if (dw != null) {
             dw.clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -488,6 +491,12 @@ final class YouTubeHub {
                     | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
         }
         wv.requestFocus(View.FOCUS_DOWN);
+    }
+
+    private static String uaForClient(String clientUsed) {
+        if ("IOS".equals(clientUsed)) return IOS_UA;
+        if ("TVHTML5_SIMPLY_EMBEDDED_PLAYER".equals(clientUsed) || "WEB".equals(clientUsed)) return WEB_UA;
+        return VR_UA;
     }
 
     /** Extracts an 11-char YouTube video ID from any youtube.com / youtu.be URL or raw 11-char ID, or null. */
@@ -1053,7 +1062,7 @@ final class YouTubeHub {
         EXEC.execute(() -> {
             java.io.File tmpV = null, tmpA = null, tmpOut = null;
             try {
-                String ua = "IOS".equals(q.clientUsed) ? IOS_UA : VR_UA;
+                String ua = uaForClient(q.clientUsed);
                 String safeName = (v.title == null ? v.id : v.title).replaceAll("[\\\\/:*?\"<>|]", "_").trim();
                 if (safeName.length() > 64) safeName = safeName.substring(0, 64).trim();
                 if (safeName.isEmpty()) safeName = "YouTube_" + v.id;
@@ -1073,22 +1082,31 @@ final class YouTubeHub {
                     finalFile = tmpOut;
                 }
 
-                // Save into public MediaStore Movies/PlayVideo (or Music/PlayVideo for audio-only)
+                // Save into public MediaStore Movies/PlayVideo (or Music/PlayVideo for audio-only) with IS_PENDING guard
                 android.content.ContentValues cv = new android.content.ContentValues();
                 cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName);
                 cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, q.audioOnly ? "audio/mp4" : "video/mp4");
                 cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
                         (q.audioOnly ? android.os.Environment.DIRECTORY_MUSIC : android.os.Environment.DIRECTORY_MOVIES) + "/PlayVideo");
+                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
                 Uri target = appCtx.getContentResolver().insert(
                         q.audioOnly ? android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
                                 : android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv);
                 if (target == null) throw new java.io.IOException("MediaStore insert failed");
-                try (java.io.InputStream is = new java.io.FileInputStream(finalFile);
-                     OutputStream os = appCtx.getContentResolver().openOutputStream(target)) {
-                    if (os == null) throw new java.io.IOException("openOutputStream failed");
-                    byte[] buf = new byte[65536];
-                    int r;
-                    while ((r = is.read(buf)) != -1) os.write(buf, 0, r);
+                try {
+                    try (java.io.InputStream is = new java.io.FileInputStream(finalFile);
+                         OutputStream os = appCtx.getContentResolver().openOutputStream(target)) {
+                        if (os == null) throw new java.io.IOException("openOutputStream failed");
+                        byte[] buf = new byte[65536];
+                        int r;
+                        while ((r = is.read(buf)) != -1) os.write(buf, 0, r);
+                    }
+                    android.content.ContentValues fin = new android.content.ContentValues();
+                    fin.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                    appCtx.getContentResolver().update(target, fin, null, null);
+                } catch (Throwable copyErr) {
+                    try { appCtx.getContentResolver().delete(target, null, null); } catch (Throwable ignored) {}
+                    throw copyErr;
                 }
                 MAIN.post(() -> {
                     Toast.makeText(m, m.getString(R.string.yt_download_done), Toast.LENGTH_LONG).show();
@@ -1179,7 +1197,14 @@ final class YouTubeHub {
             int vDst = muxer.addTrack(ve.getTrackFormat(vSrc));
             int aDst = muxer.addTrack(ae.getTrackFormat(aSrc));
             muxer.start();
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(512 * 1024);
+            int bufSize = 2 * 1024 * 1024;
+            try {
+                android.media.MediaFormat vf = ve.getTrackFormat(vSrc);
+                if (vf.containsKey(android.media.MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                    bufSize = Math.max(bufSize, vf.getInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE));
+                }
+            } catch (Throwable ignored) {}
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(bufSize);
             android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
             while (true) {
                 info.offset = 0;
@@ -2242,7 +2267,11 @@ final class YouTubeHub {
                 botBar.addView(npBtn, nplp);
             }
 
-            botCard.addView(botBar, Widgets.MW);
+            android.widget.HorizontalScrollView botBarScroll = new android.widget.HorizontalScrollView(m);
+            botBarScroll.setHorizontalScrollBarEnabled(false);
+            botBarScroll.setFillViewport(true);
+            botBarScroll.addView(botBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            botCard.addView(botBarScroll, Widgets.MW);
 
             LayoutParams blp = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
             blp.setMargins(sideSafe, 0, sideSafe, Math.max(Ui.navInset, Ui.dp(12)) + Ui.dp(12));
@@ -2301,6 +2330,10 @@ final class YouTubeHub {
             openP.to(1f);
         }
 
+        void setPipMode(boolean pip) {
+            chrome.setVisibility(pip ? GONE : VISIBLE);
+        }
+
         private void toggleChrome() {
             chromeVisible = !chromeVisible;
             chrome.animate().alpha(chromeVisible ? 1f : 0f).setDuration(180).start();
@@ -2310,7 +2343,7 @@ final class YouTubeHub {
             if (closing || webMode) return;
             releasePlayer();
             try {
-                String ua = "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA;
+                String ua = uaForClient(stream.clientUsed);
                 Map<String, String> headers = new HashMap<>();
                 headers.put("User-Agent", ua);
 
@@ -2582,13 +2615,16 @@ final class YouTubeHub {
                     webFallback.evaluateJavascript("(function(){var v=document.querySelector('video');if(v)v.playbackRate=" + speed + ";})();", null);
                 } else if (mp != null && prepared) {
                     try {
+                        boolean wasPlaying = playing && mp.isPlaying();
                         PlaybackParams pp = mp.getPlaybackParams();
                         pp.setSpeed(speed);
                         mp.setPlaybackParams(pp);
+                        if (!wasPlaying) mp.pause();
                         if (audioMp != null && audioReady) {
                             PlaybackParams app = audioMp.getPlaybackParams();
                             app.setSpeed(speed);
                             audioMp.setPlaybackParams(app);
+                            if (!wasPlaying) audioMp.pause();
                         }
                     } catch (Throwable ignored) {}
                 }
@@ -2604,7 +2640,7 @@ final class YouTubeHub {
             es.add(new GlassMenu.Entry(m.getString(R.string.yt_download),
                     Icons.FOLDER, false, () -> showDownloadSheet(m, video, currentStream, anchor)));
             es.add(new GlassMenu.Entry(m.getString(R.string.psa_title) + " (" + NpuVideo.summary(m) + ")",
-                    Icons.PROSCALER, NpuVideo.enabled(m), () -> NpuVideo.showQuickSheet(m, r, null)));
+                    Icons.PROSCALER, NpuVideo.enabled(m), () -> NpuVideo.showQuickSheet(m, r, texture)));
             es.add(new GlassMenu.Entry(m.getString(R.string.bpa_title) + " (" + NpuAudio.summary(m) + ")",
                     Icons.HEADPHONES, NpuAudio.enabled(m), () -> {
                 close();
@@ -2616,7 +2652,12 @@ final class YouTubeHub {
             if (isNewPipeInstalled(m)) {
                 es.add(new GlassMenu.Entry(m.getString(R.string.yt_open_newpipe), Icons.YOUTUBE, false, () -> openInNewPipe(m, video.id)));
             }
-            es.add(new GlassMenu.Entry(m.getString(R.string.yt_open_external), Icons.GLOBE, false, () -> openInNewPipe(m, video.id)));
+            es.add(new GlassMenu.Entry(m.getString(R.string.yt_open_external), Icons.GLOBE, false, () -> {
+                try {
+                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + video.id));
+                    m.startActivity(Intent.createChooser(i, m.getString(R.string.yt_open_external)));
+                } catch (Throwable ignored) {}
+            }));
             GlassMenu.sheet(m, r, video.title, es, anchor);
         }
 

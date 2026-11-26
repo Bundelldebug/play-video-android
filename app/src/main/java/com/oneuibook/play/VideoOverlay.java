@@ -381,10 +381,23 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
             if (!open) setVisibility(GONE);
         };
 
-        VideoPlayer.listeners.add(() -> {
+        playerListener = () -> {
             if (open) updatePlaybackUi();
             applyVideoTransform();
-        });
+        };
+        VideoPlayer.listeners.add(playerListener);
+    }
+
+    private final Runnable playerListener;
+    private Surface activeSurface;
+
+    void destroy() {
+        VideoPlayer.listeners.remove(playerListener);
+        h.removeCallbacksAndMessages(null);
+        if (activeSurface != null) {
+            try { activeSurface.release(); } catch (Throwable ignored) {}
+            activeSurface = null;
+        }
     }
 
     /** Dark translucent glass capsule with luminous rim and subtle top sheen. */
@@ -678,11 +691,17 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
 
     // ---- TextureView.SurfaceTextureListener ----
     @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
-        VideoPlayer.setSurface(new Surface(st));
+        if (activeSurface != null) { try { activeSurface.release(); } catch (Throwable ignored) {} }
+        activeSurface = new Surface(st);
+        VideoPlayer.setSurface(activeSurface);
         applyVideoTransform();
     }
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) { applyVideoTransform(); }
-    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { VideoPlayer.setSurface(null); return true; }
+    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+        VideoPlayer.setSurface(null);
+        if (activeSurface != null) { try { activeSurface.release(); } catch (Throwable ignored) {} activeSurface = null; }
+        return true;
+    }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
 
     // ---- Touch gestures ----
@@ -849,7 +868,10 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
             row.addView(c, lp);
         }
         syncPresets.run();
-        box.addView(row, Widgets.MW);
+        android.widget.HorizontalScrollView speedScroll = new android.widget.HorizontalScrollView(m);
+        speedScroll.setHorizontalScrollBarEnabled(false);
+        speedScroll.addView(row);
+        box.addView(speedScroll, Widgets.MW);
         GlassMenu.customSheet(m, anchorOf(anchor), m.getString(R.string.speed), box, anchor);
     }
 
@@ -924,7 +946,10 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
             lp.setMargins(Ui.dp(3), 0, Ui.dp(3), 0);
             row.addView(b, lp);
         }
-        box.addView(row, Widgets.MW);
+        android.widget.HorizontalScrollView syncScroll = new android.widget.HorizontalScrollView(m);
+        syncScroll.setHorizontalScrollBarEnabled(false);
+        syncScroll.addView(row);
+        box.addView(syncScroll, Widgets.MW);
 
         TextView reset = Ui.text(m, m.getString(R.string.reset), 13.5f, Ui.semibold, Ui.ACCENT);
         reset.setGravity(Gravity.CENTER);
@@ -1058,15 +1083,26 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
         };
         box.addView(boostSl);
 
-        // Preset chips
+        // Preset chips + 5 key bands summary sliders synchronized on preset tap
         LinearLayout presets = Widgets.rail(box, 6);
-        for (int i = 0; i < AudioFx.PRESET_NAMES.length - 1; i++) {
+        final int presetCount = AudioFx.PRESET_NAMES.length - 1;
+        final TextView[] presetChips = new TextView[presetCount];
+        final int[] showIdx = {1, 3, 5, 7, 9};
+        final Widgets.Slider[] bandSliders = new Widgets.Slider[showIdx.length];
+        for (int i = 0; i < presetCount; i++) {
             final int idx = i;
             TextView ch = Ui.text(m, AudioFx.PRESET_NAMES[i], 12.5f, Ui.semibold, fg);
             ch.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
             ch.setBackground(Ui.round(AudioFx.presetIndex == i ? Ui.ACCENT : (open ? 0x26FFFFFF : Ui.chip()), 100));
+            presetChips[i] = ch;
             ch.setOnClickListener(v -> {
                 AudioFx.applyPreset(m, idx);
+                for (int j = 0; j < presetCount; j++) {
+                    presetChips[j].setBackground(Ui.round(AudioFx.presetIndex == j ? Ui.ACCENT : (open ? 0x26FFFFFF : Ui.chip()), 100));
+                }
+                for (int j = 0; j < showIdx.length; j++) {
+                    if (bandSliders[j] != null) bandSliders[j].setValue((AudioFx.bands[showIdx[j]] + 12f) / 24f);
+                }
                 Toast.makeText(m, AudioFx.PRESET_NAMES[idx] + " 적용", Toast.LENGTH_SHORT).show();
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1074,9 +1110,8 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
             presets.addView(ch, lp);
         }
 
-        // 5 key bands summary sliders (62, 250, 1K, 4K, 16K) mapped to 10-band EQ
-        int[] showIdx = {1, 3, 5, 7, 9};
-        for (int bIdx : showIdx) {
+        for (int j = 0; j < showIdx.length; j++) {
+            final int bIdx = showIdx[j];
             LinearLayout r = new LinearLayout(m);
             r.setGravity(Gravity.CENTER_VERTICAL);
             TextView lbl = Ui.text(m, AudioFx.LABELS[bIdx] + "Hz", 12, Ui.medium, fg);
@@ -1084,6 +1119,7 @@ final class VideoOverlay extends FrameLayout implements TextureView.SurfaceTextu
             Widgets.Slider s = new Widgets.Slider(m, (AudioFx.bands[bIdx] + 12f) / 24f);
             s.darkSurface = open;
             s.change = (f, u) -> AudioFx.setBand(m, bIdx, f * 24f - 12f);
+            bandSliders[j] = s;
             r.addView(s, new LinearLayout.LayoutParams(0, Ui.dp(32), 1f));
             box.addView(r, Widgets.MW);
         }
