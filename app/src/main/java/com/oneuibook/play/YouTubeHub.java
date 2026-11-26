@@ -348,6 +348,12 @@ final class YouTubeHub {
                 }
             }
         });
+        wv.setFocusable(true);
+        wv.setFocusableInTouchMode(true);
+        wv.setOnTouchListener((v, ev) -> {
+            if (!v.hasFocus()) v.requestFocus();
+            return false;
+        });
         wv.setWebChromeClient(new WebChromeClient());
         wv.loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F");
 
@@ -364,6 +370,14 @@ final class YouTubeHub {
             b.setNeutralButton(m.getString(R.string.yt_microg_open), (d, w) -> openMicroGSettings(m));
         }
         dlgRef[0] = b.show();
+        android.view.Window dw = dlgRef[0].getWindow();
+        if (dw != null) {
+            dw.clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    | android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+            dw.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                    | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        }
+        wv.requestFocus(View.FOCUS_DOWN);
     }
 
     /** Extracts an 11-char YouTube video ID from any youtube.com / youtu.be URL or raw 11-char ID, or null. */
