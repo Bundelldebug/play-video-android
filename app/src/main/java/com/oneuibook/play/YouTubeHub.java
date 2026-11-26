@@ -1,16 +1,25 @@
 package com.oneuibook.play;
 
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
+import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -18,17 +27,20 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.JavascriptInterface;
+import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -39,27 +51,32 @@ import org.xmlpull.v1.XmlPullParserFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Play-UI YouTube Hub & Cinema Player:
- * - Browses YouTube videos inside Play's own A/G glass UI (Chips, 16:9 cards, channel subscriptions, search).
- * - Uses public YouTube Atom/RSS feeds, official oEmbed metadata, optional YouTube Data API v3 key,
- *   and configurable public Piped/Invidious JSON API endpoints for search, trending, and comments.
- * - Full-screen Play-UI YouTube Player Overlay with Play's own Glass/G-style top & bottom controls,
- *   speed control (0.25x..2.0x), NPU ProScaler Assist & Bit-Perfect Assist quick access,
- *   comments & video description sheet, and optional 1-tap handoff to org.schabi.newpipe if installed.
+ * Play-UI YouTube Hub & Native Cinema Player (v9.5.7):
+ * - Direct YouTube InnerTube API (/browse, /search, /player) with Google & microG session support
+ *   (SAPISIDHASH auth headers + microG / GmsCore detection & account bridge).
+ * - Native TextureView + MediaPlayer stream playback (IOS / ANDROID_VR / TVHTML5_SIMPLY_EMBEDDED_PLAYER)
+ *   with scrub seekbar, PlaybackParams speed, resolution badge, and 1-tap mobile WebView fallback
+ *   sharing Google/microG cookies (completely fixing broken youtube-nocookie.com IFrame Error 150/152/153).
  */
 final class YouTubeHub {
     private YouTubeHub() {}
@@ -67,10 +84,25 @@ final class YouTubeHub {
     static final String PREF_API_KEY = "yt_api_key";
     static final String PREF_PIPED_URL = "yt_piped_url";
     static final String PREF_SUB_CHANNELS = "yt_sub_channels";
+    static final String PREF_GOOGLE_COOKIE = "yt_google_cookie";
+    static final String PREF_GOOGLE_ACCOUNT = "yt_google_account";
     static final String DEFAULT_PIPED = "https://pipedapi.kavin.rocks";
     static final String NEWPIPE_PKG = "org.schabi.newpipe";
 
-    private static final ExecutorService EXEC = Executors.newFixedThreadPool(3);
+    private static final String[][] MICROG_PKGS = {
+            {"app.revanced.android.gms", "ReVanced microG (GmsCore)"},
+            {"org.microg.gms", "microG Services"},
+            {"com.mgoogle.android.gms", "Vanced microG"},
+            {"com.google.android.gms", "Google Play Services"}
+    };
+
+    private static final String YT_ORIGIN = "https://www.youtube.com";
+    private static final String YT_API_BASE = "https://www.youtube.com/youtubei/v1/";
+    private static final String WEB_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+    private static final String IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)";
+    private static final String VR_UA = "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+
+    private static final ExecutorService EXEC = Executors.newFixedThreadPool(4);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final LruCache<String, Bitmap> THUMBS = new LruCache<>(80);
 
@@ -98,27 +130,240 @@ final class YouTubeHub {
             this.description = "";
         }
 
-        String thumbUrl() {
-            return "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg";
-        }
-
-        String watchUrl() {
-            return "https://www.youtube.com/watch?v=" + id;
-        }
+        String thumbUrl() { return "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"; }
+        String watchUrl() { return "https://www.youtube.com/watch?v=" + id; }
     }
 
     static final class YtComment {
-        final String author;
-        final String text;
-        final String time;
-        final String likes;
-
+        final String author, text, time, likes;
         YtComment(String author, String text, String time, String likes) {
             this.author = author == null ? "" : author;
             this.text = text == null ? "" : text;
             this.time = time == null ? "" : time;
             this.likes = likes == null ? "" : likes;
         }
+    }
+
+    static final class ResolvedStream {
+        String url;
+        String qualityLabel;
+        String clientUsed;
+        String title;
+        String author;
+        String description;
+        long durationSec;
+        boolean hls;
+        String error;
+    }
+
+    static final class MicroGInfo {
+        final String pkg;
+        final String label;
+        final boolean isMicroG;
+        MicroGInfo(String pkg, String label, boolean isMicroG) {
+            this.pkg = pkg;
+            this.label = label;
+            this.isMicroG = isMicroG;
+        }
+    }
+
+    /** Detects installed microG (ReVanced GmsCore / org.microg.gms / Vanced) or Google Play Services. */
+    static MicroGInfo detectMicroGProvider(Context c) {
+        if (c == null) return null;
+        PackageManager pm = c.getPackageManager();
+        for (int i = 0; i < MICROG_PKGS.length; i++) {
+            try {
+                pm.getPackageInfo(MICROG_PKGS[i][0], 0);
+                return new MicroGInfo(MICROG_PKGS[i][0], MICROG_PKGS[i][1], i < 3);
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    /** Safely reads Google / microG accounts registered on the device if accessible. */
+    static List<String> detectDeviceGoogleAccounts(Context c) {
+        List<String> out = new ArrayList<>();
+        try {
+            AccountManager am = AccountManager.get(c);
+            if (am != null) {
+                for (Account acc : am.getAccountsByType("com.google")) {
+                    if (acc.name != null && !acc.name.isEmpty()) out.add(acc.name);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
+    static void openMicroGSettings(Context c) {
+        MicroGInfo info = detectMicroGProvider(c);
+        if (info == null) {
+            Toast.makeText(c, "설치된 microG 앱이 없습니다.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent launch = c.getPackageManager().getLaunchIntentForPackage(info.pkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                c.startActivity(launch);
+                return;
+            }
+            Intent settings = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + info.pkg));
+            settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            c.startActivity(settings);
+        } catch (Throwable t) {
+            Toast.makeText(c, "microG 설정을 열 수 없습니다.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    static String getGoogleCookie(Context c) {
+        String saved = MainActivity.prefs(c).getString(PREF_GOOGLE_COOKIE, "").trim();
+        if (!saved.isEmpty()) return saved;
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            if (cm != null) {
+                String live = cm.getCookie("https://www.youtube.com");
+                if (live != null && (live.contains("SAPISID=") || live.contains("__Secure-3PAPISID="))) {
+                    return live;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    static boolean isGoogleSignedIn(Context c) {
+        String ck = getGoogleCookie(c);
+        return ck.contains("SAPISID=") || ck.contains("__Secure-3PAPISID=") || ck.contains("SID=");
+    }
+
+    static String getSignedInLabel(Context c) {
+        String saved = MainActivity.prefs(c).getString(PREF_GOOGLE_ACCOUNT, "").trim();
+        if (!saved.isEmpty()) return saved;
+        List<String> dev = detectDeviceGoogleAccounts(c);
+        if (!dev.isEmpty()) return dev.get(0);
+        return isGoogleSignedIn(c) ? c.getString(R.string.yt_google_signed_in) : "";
+    }
+
+    static void signOutGoogle(Context c) {
+        MainActivity.prefs(c).edit()
+                .remove(PREF_GOOGLE_COOKIE)
+                .remove(PREF_GOOGLE_ACCOUNT)
+                .apply();
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            if (cm != null) {
+                cm.removeAllCookies(null);
+                cm.flush();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Generates standard YouTube SAPISIDHASH Authorization header from Google session cookies. */
+    static String buildSapisidHash(String cookieHeader, String origin) {
+        if (cookieHeader == null || cookieHeader.isEmpty()) return null;
+        String sapisid = extractCookieValue(cookieHeader, "__Secure-3PAPISID");
+        if (sapisid == null) sapisid = extractCookieValue(cookieHeader, "SAPISID");
+        if (sapisid == null || sapisid.isEmpty()) return null;
+        try {
+            long ts = System.currentTimeMillis() / 1000L;
+            String raw = ts + " " + sapisid + " " + (origin == null ? YT_ORIGIN : origin);
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] dig = md.digest(raw.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : dig) hex.append(String.format(Locale.US, "%02x", b & 0xff));
+            return "SAPISIDHASH " + ts + "_" + hex;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String extractCookieValue(String cookieHeader, String name) {
+        if (cookieHeader == null) return null;
+        for (String part : cookieHeader.split(";")) {
+            String t = part.trim();
+            int eq = t.indexOf('=');
+            if (eq > 0 && t.substring(0, eq).trim().equals(name)) {
+                return t.substring(eq + 1).trim();
+            }
+        }
+        return null;
+    }
+
+    /** Opens Google / microG compatible WebView sign-in dialog capturing YouTube session cookies. */
+    static void showGoogleLoginDialog(MainActivity m, Runnable onDone) {
+        LinearLayout box = new LinearLayout(m);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        MicroGInfo mg = detectMicroGProvider(m);
+        List<String> devAccs = detectDeviceGoogleAccounts(m);
+        StringBuilder hint = new StringBuilder();
+        if (mg != null && mg.isMicroG) {
+            hint.append(m.getString(R.string.yt_microg_detected, mg.label));
+            if (!devAccs.isEmpty()) hint.append(" · ").append(devAccs.get(0));
+            hint.append("\n아래에서 Google 계정에 로그인하면 YouTube 맞춤 피드 및 스트림 세션이 연동됩니다.");
+        } else {
+            hint.append("Google 계정에 로그인하면 YouTube 맞춤 피드와 연령·세션 제한 영상을 재생할 수 있습니다.");
+        }
+
+        TextView banner = Ui.text(m, hint.toString(), 12.5f, Ui.medium, Ui.text2());
+        banner.setSingleLine(false);
+        banner.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(8));
+        box.addView(banner, Widgets.MW);
+
+        WebView wv = new WebView(m);
+        WebSettings ws = wv.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setDatabaseEnabled(true);
+        ws.setUserAgentString(WEB_UA);
+        CookieManager cm = CookieManager.getInstance();
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(wv, true);
+
+        final AlertDialog[] dlgRef = new AlertDialog[1];
+        Runnable captureSession = () -> {
+            try {
+                cm.flush();
+                String ckYt = cm.getCookie("https://www.youtube.com");
+                String ckMob = cm.getCookie("https://m.youtube.com");
+                String merged = (ckYt != null ? ckYt : "") + (ckMob != null && !ckMob.equals(ckYt) ? "; " + ckMob : "");
+                if (merged.contains("SAPISID=") || merged.contains("__Secure-3PAPISID=") || merged.contains("SID=")) {
+                    String label = !devAccs.isEmpty() ? devAccs.get(0) : m.getString(R.string.yt_google_signed_in);
+                    MainActivity.prefs(m).edit()
+                            .putString(PREF_GOOGLE_COOKIE, merged.trim())
+                            .putString(PREF_GOOGLE_ACCOUNT, label)
+                            .apply();
+                    Toast.makeText(m, m.getString(R.string.yt_google_signed_in), Toast.LENGTH_SHORT).show();
+                    if (dlgRef[0] != null && dlgRef[0].isShowing()) dlgRef[0].dismiss();
+                    if (onDone != null) onDone.run();
+                }
+            } catch (Throwable ignored) {}
+        };
+
+        wv.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (url != null && (url.contains("youtube.com") && !url.contains("accounts.google.com"))) {
+                    captureSession.run();
+                }
+            }
+        });
+        wv.setWebChromeClient(new WebChromeClient());
+        wv.loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fm.youtube.com%2F");
+
+        int h = Math.max(Ui.dp(380), (int) (Ui.screenH * 0.62f));
+        box.addView(wv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
+
+        AlertDialog.Builder b = new AlertDialog.Builder(m,
+                Ui.dark ? android.R.style.Theme_DeviceDefault_Dialog_Alert : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
+                .setTitle(m.getString(R.string.yt_account_title))
+                .setView(box)
+                .setPositiveButton("로그인 완료 적용", (d, w) -> captureSession.run())
+                .setNegativeButton(m.getString(R.string.cancel), null);
+        if (mg != null && mg.isMicroG) {
+            b.setNeutralButton(m.getString(R.string.yt_microg_open), (d, w) -> openMicroGSettings(m));
+        }
+        dlgRef[0] = b.show();
     }
 
     /** Extracts an 11-char YouTube video ID from any youtube.com / youtu.be URL or raw 11-char ID, or null. */
@@ -145,16 +390,12 @@ final class YouTubeHub {
         return null;
     }
 
-    static boolean isYouTubeUrl(String text) {
-        return extractVideoId(text) != null;
-    }
+    static boolean isYouTubeUrl(String text) { return extractVideoId(text) != null; }
 
     static boolean isNewPipeInstalled(Context c) {
         try {
             c.getPackageManager().getPackageInfo(NEWPIPE_PKG, 0);
             return true;
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
         } catch (Throwable t) {
             return false;
         }
@@ -174,20 +415,16 @@ final class YouTubeHub {
         }
     }
 
-    // ---- Curated default channels for instant RSS feed browsing without API keys ----
+    // ---- Curated default channels for reliable offline/RSS fallback ----
     private static final String[][] CURATED_CHANNELS = {
-            // Tech & Hardware
             {"UCBJycsmduvYEL83R_U4JriQ", "Marques Brownlee (MKBHD)", "tech"},
             {"UCXuqSBlHAE6Xw-yeJA0Tunw", "Linus Tech Tips", "tech"},
             {"UCsXVk37bltHxD1rDPwtNM8Q", "Kurzgesagt", "tech"},
-            // Music
             {"UC38IQsAvIsxxjztdMZQtwHA", "HYBE LABELS", "music"},
             {"UCEf_Bc-KVd7onSeifS3py9g", "SMTOWN", "music"},
             {"UCaO6TYtlC8U5ttz62hTrZgg", "JYP Entertainment", "music"},
-            // Gaming
             {"UC-2Y8dQb0S6DtpxNgAKoJKA", "PlayStation", "gaming"},
             {"UCGIY_O-8vW4rfX98KlMkvRg", "Nintendo", "gaming"},
-            // Film & Animation
             {"UCi8e0iOVk1fEOogdfu4YgfA", "Movieclips Trailers", "film"},
             {"UCjmJDM5pRKbUlVIzDYYWb6g", "Warner Bros. Pictures", "film"}
     };
@@ -217,18 +454,264 @@ final class YouTubeHub {
 
     interface ListCb { void onResult(List<YtVideo> videos, String sourceLabel); }
     interface CommentsCb { void onResult(List<YtComment> comments, String description); }
+    interface StreamCb { void onResolved(ResolvedStream stream); }
+
+    // ---- Direct YouTube InnerTube HTTP client ----
+    private static JSONObject innertubePost(Context c, String endpoint, JSONObject body,
+                                            String clientNameId, String clientVersion, String ua, boolean attachAuth) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(YT_API_BASE + endpoint + "?prettyPrint=false").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(6500);
+            conn.setReadTimeout(7500);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("Origin", YT_ORIGIN);
+            conn.setRequestProperty("Referer", YT_ORIGIN + "/");
+            conn.setRequestProperty("X-YouTube-Client-Name", clientNameId);
+            conn.setRequestProperty("X-YouTube-Client-Version", clientVersion);
+            if (ua != null) conn.setRequestProperty("User-Agent", ua);
+
+            if (attachAuth) {
+                String cookie = getGoogleCookie(c);
+                if (!cookie.isEmpty()) {
+                    conn.setRequestProperty("Cookie", cookie);
+                    String auth = buildSapisidHash(cookie, YT_ORIGIN);
+                    if (auth != null) conn.setRequestProperty("Authorization", auth);
+                    conn.setRequestProperty("X-Origin", YT_ORIGIN);
+                }
+            }
+
+            byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(payload);
+            }
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) return null;
+            try (InputStream is = conn.getInputStream(); ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = is.read(buf)) != -1) bos.write(buf, 0, r);
+                return new JSONObject(new String(bos.toByteArray(), StandardCharsets.UTF_8));
+            }
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static JSONObject webContext() throws Exception {
+        JSONObject client = new JSONObject()
+                .put("clientName", "WEB")
+                .put("clientVersion", "2.20250301.00.00")
+                .put("hl", "ko")
+                .put("gl", "KR");
+        return new JSONObject().put("client", client);
+    }
+
+    /** Recursively extracts videoRenderer / compactVideoRenderer items from any InnerTube browse/search JSON. */
+    private static void collectRenderers(Object node, List<YtVideo> out, Set<String> seen, int limit) {
+        if (node == null || out.size() >= limit) return;
+        if (node instanceof JSONObject) {
+            JSONObject o = (JSONObject) node;
+            JSONObject vr = o.optJSONObject("videoRenderer");
+            if (vr == null) vr = o.optJSONObject("compactVideoRenderer");
+            if (vr == null) vr = o.optJSONObject("gridVideoRenderer");
+            if (vr != null) {
+                String vid = vr.optString("videoId");
+                if (!vid.isEmpty() && !seen.contains(vid)) {
+                    seen.add(vid);
+                    String title = readYtText(vr.optJSONObject("title"));
+                    String author = readYtText(vr.optJSONObject("ownerText"));
+                    if (author.isEmpty()) author = readYtText(vr.optJSONObject("longBylineText"));
+                    if (author.isEmpty()) author = readYtText(vr.optJSONObject("shortBylineText"));
+                    YtVideo v = new YtVideo(vid, title, author);
+                    v.views = readYtText(vr.optJSONObject("shortViewCountText"));
+                    if (v.views.isEmpty()) v.views = readYtText(vr.optJSONObject("viewCountText"));
+                    v.published = readYtText(vr.optJSONObject("publishedTimeText"));
+                    v.durationSec = parseDurationText(readYtText(vr.optJSONObject("lengthText")));
+                    out.add(v);
+                }
+                return;
+            }
+            java.util.Iterator<String> keys = o.keys();
+            while (keys.hasNext() && out.size() < limit) {
+                collectRenderers(o.opt(keys.next()), out, seen, limit);
+            }
+        } else if (node instanceof JSONArray) {
+            JSONArray a = (JSONArray) node;
+            for (int i = 0; i < a.length() && out.size() < limit; i++) {
+                collectRenderers(a.opt(i), out, seen, limit);
+            }
+        }
+    }
+
+    private static String readYtText(JSONObject o) {
+        if (o == null) return "";
+        String simple = o.optString("simpleText");
+        if (!simple.isEmpty()) return simple;
+        JSONArray runs = o.optJSONArray("runs");
+        if (runs != null) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < runs.length(); i++) {
+                JSONObject r = runs.optJSONObject(i);
+                if (r != null) sb.append(r.optString("text"));
+            }
+            return sb.toString();
+        }
+        return "";
+    }
+
+    private static long parseDurationText(String s) {
+        if (s == null || s.isEmpty() || !s.contains(":")) return 0;
+        try {
+            String[] p = s.trim().split(":");
+            long sec = 0;
+            for (String part : p) sec = sec * 60L + Long.parseLong(part.replaceAll("\\D", ""));
+            return sec;
+        } catch (Throwable ignored) { return 0; }
+    }
+
+    /** Resolves a direct playable progressive MP4 or HLS stream URL via YouTube InnerTube /player clients. */
+    static void resolveStream(Context c, String videoId, StreamCb cb) {
+        EXEC.execute(() -> {
+            ResolvedStream best = resolveStreamSync(c, videoId);
+            MAIN.post(() -> cb.onResolved(best));
+        });
+    }
+
+    private static ResolvedStream resolveStreamSync(Context c, String videoId) {
+        ResolvedStream result = new ResolvedStream();
+        String[][] clients = {
+                {"IOS", "5", "20.10.4", IOS_UA},
+                {"ANDROID_VR", "28", "1.62.27", VR_UA},
+                {"TVHTML5_SIMPLY_EMBEDDED_PLAYER", "85", "2.0", WEB_UA}
+        };
+        boolean authed = isGoogleSignedIn(c);
+        for (String[] cl : clients) {
+            try {
+                JSONObject client = new JSONObject()
+                        .put("clientName", cl[0])
+                        .put("clientVersion", cl[2])
+                        .put("hl", "ko")
+                        .put("gl", "KR");
+                if ("IOS".equals(cl[0])) {
+                    client.put("deviceMake", "Apple")
+                            .put("deviceModel", "iPhone16,2")
+                            .put("osName", "iPhone")
+                            .put("osVersion", "18.3.1.22D72");
+                } else if ("ANDROID_VR".equals(cl[0])) {
+                    client.put("androidSdkVersion", 32)
+                            .put("osName", "Android")
+                            .put("osVersion", "12");
+                }
+                JSONObject ctx = new JSONObject().put("client", client);
+                if ("TVHTML5_SIMPLY_EMBEDDED_PLAYER".equals(cl[0])) {
+                    ctx.put("thirdParty", new JSONObject().put("embedUrl", "https://www.youtube.com/"));
+                }
+                JSONObject body = new JSONObject()
+                        .put("videoId", videoId)
+                        .put("contentCheckOk", true)
+                        .put("racyCheckOk", true)
+                        .put("context", ctx);
+
+                JSONObject resp = innertubePost(c, "player", body, cl[1], cl[2], cl[3], authed && !"IOS".equals(cl[0]));
+                if (resp == null) continue;
+
+                JSONObject vd = resp.optJSONObject("videoDetails");
+                if (vd != null) {
+                    if (result.title == null || result.title.isEmpty()) result.title = vd.optString("title");
+                    if (result.author == null || result.author.isEmpty()) result.author = vd.optString("author");
+                    if (result.description == null || result.description.isEmpty()) result.description = vd.optString("shortDescription");
+                    try { result.durationSec = Long.parseLong(vd.optString("lengthSeconds", "0")); } catch (Throwable ignored) {}
+                }
+
+                JSONObject sd = resp.optJSONObject("streamingData");
+                if (sd == null) continue;
+
+                // 1) Progressive muxed MP4 formats (audio+video in a single MediaPlayer URL)
+                JSONArray formats = sd.optJSONArray("formats");
+                String chosenUrl = null;
+                String chosenQ = null;
+                int bestH = -1;
+                if (formats != null) {
+                    for (int i = 0; i < formats.length(); i++) {
+                        JSONObject f = formats.optJSONObject(i);
+                        if (f == null) continue;
+                        String u = f.optString("url");
+                        if (u.isEmpty()) continue;
+                        String mime = f.optString("mimeType").toLowerCase(Locale.US);
+                        if (!mime.contains("video/mp4") && !mime.contains("video/webm")) continue;
+                        int h = f.optInt("height", 360);
+                        int score = h + (mime.contains("video/mp4") ? 2000 : 0);
+                        if (score > bestH) {
+                            bestH = score;
+                            chosenUrl = u;
+                            chosenQ = f.optString("qualityLabel", h + "p");
+                        }
+                    }
+                }
+                if (chosenUrl != null) {
+                    result.url = chosenUrl;
+                    result.qualityLabel = chosenQ + " · " + cl[0];
+                    result.clientUsed = cl[0];
+                    result.hls = false;
+                    return result;
+                }
+
+                // 2) HLS manifest URL (natively supported by Android MediaPlayer on iOS client)
+                String hls = sd.optString("hlsManifestUrl");
+                if (!hls.isEmpty()) {
+                    result.url = hls;
+                    result.qualityLabel = "HLS HD · " + cl[0];
+                    result.clientUsed = cl[0];
+                    result.hls = true;
+                    return result;
+                }
+            } catch (Throwable ignored) {}
+        }
+        result.error = "Direct stream unavailable";
+        return result;
+    }
 
     static void loadCategory(Context c, int categoryIdx, ListCb cb) {
         String[] cats = {"all", "music", "gaming", "film", "tech"};
+        String[] queries = {"", "인기 뮤직비디오 2026", "게임 최신 트레일러", "영화 공식 예고편", "최신 스마트폰 테크 리뷰"};
         String filter = categoryIdx >= 0 && categoryIdx < cats.length ? cats[categoryIdx] : "all";
         String pipedBase = MainActivity.prefs(c).getString(PREF_PIPED_URL, DEFAULT_PIPED).trim();
         String apiKey = MainActivity.prefs(c).getString(PREF_API_KEY, "").trim();
 
         EXEC.execute(() -> {
             List<YtVideo> out = new ArrayList<>();
-            String src = "YouTube RSS";
-            // 1) If YouTube Data API v3 key is configured and category is trending
-            if (!apiKey.isEmpty() && categoryIdx == 0) {
+            String src = "YouTube InnerTube";
+            Set<String> seen = new HashSet<>();
+
+            // 1) Direct YouTube InnerTube browse / search (authenticated if Google/microG signed in!)
+            try {
+                if (categoryIdx == 0) {
+                    String browseId = isGoogleSignedIn(c) ? "FEwhat_to_watch" : "FEtrending";
+                    JSONObject body = new JSONObject()
+                            .put("browseId", browseId)
+                            .put("context", webContext());
+                    JSONObject resp = innertubePost(c, "browse", body, "1", "2.20250301.00.00", WEB_UA, true);
+                    if (resp != null) collectRenderers(resp, out, seen, 20);
+                    if (!out.isEmpty()) {
+                        src = isGoogleSignedIn(c) ? "YouTube 맞춤 피드 (Google)" : "YouTube 인기 급상승";
+                    }
+                } else {
+                    JSONObject body = new JSONObject()
+                            .put("query", queries[categoryIdx])
+                            .put("context", webContext());
+                    JSONObject resp = innertubePost(c, "search", body, "1", "2.20250301.00.00", WEB_UA, true);
+                    if (resp != null) collectRenderers(resp, out, seen, 20);
+                }
+            } catch (Throwable ignored) {}
+
+            // 2) YouTube Data API v3 fallback if configured
+            if (out.isEmpty() && !apiKey.isEmpty() && categoryIdx == 0) {
                 try {
                     String u = "https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=KR&maxResults=16&key="
                             + URLEncoder.encode(apiKey, "UTF-8");
@@ -254,17 +737,16 @@ final class YouTubeHub {
                 } catch (Throwable ignored) {}
             }
 
-            // 2) Try Piped trending JSON API if category == 0 and out is empty
+            // 3) Piped fallback
             if (out.isEmpty() && categoryIdx == 0 && !pipedBase.isEmpty()) {
                 try {
                     String base = pipedBase.endsWith("/") ? pipedBase.substring(0, pipedBase.length() - 1) : pipedBase;
-                    String json = httpGet(base + "/trending?region=KR", 4500);
+                    String json = httpGet(base + "/trending?region=KR", 4000);
                     if (json != null && json.trim().startsWith("[")) {
                         JSONArray arr = new JSONArray(json);
                         for (int i = 0; i < Math.min(20, arr.length()); i++) {
                             JSONObject o = arr.getJSONObject(i);
-                            String url = o.optString("url");
-                            String id = extractVideoId("https://www.youtube.com" + url);
+                            String id = extractVideoId("https://www.youtube.com" + o.optString("url"));
                             if (id != null) {
                                 YtVideo v = new YtVideo(id, o.optString("title"), o.optString("uploaderName"));
                                 v.durationSec = Math.max(0, o.optLong("duration", 0));
@@ -279,7 +761,7 @@ final class YouTubeHub {
                 } catch (Throwable ignored) {}
             }
 
-            // 3) Always supplement / fallback to official YouTube public Atom/RSS feeds
+            // 4) Official YouTube public Atom/RSS feeds fallback
             if (out.isEmpty()) {
                 List<String[]> chans = subscribedChannels(c);
                 int fetched = 0;
@@ -289,6 +771,7 @@ final class YouTubeHub {
                     for (int i = 0; i < Math.min(4, feed.size()); i++) out.add(feed.get(i));
                     if (++fetched >= 5) break;
                 }
+                src = "YouTube RSS";
             }
 
             final List<YtVideo> res = out;
@@ -303,24 +786,31 @@ final class YouTubeHub {
             return;
         }
         final String q = query.trim();
-        // Check if query is a direct YouTube URL or 11-char video ID
         final String directId = extractVideoId(q);
         final String pipedBase = MainActivity.prefs(c).getString(PREF_PIPED_URL, DEFAULT_PIPED).trim();
         final String apiKey = MainActivity.prefs(c).getString(PREF_API_KEY, "").trim();
 
         EXEC.execute(() -> {
             List<YtVideo> out = new ArrayList<>();
-            String src = "YouTube";
+            String src = "YouTube 검색";
             if (directId != null) {
-                YtVideo v = fetchOEmbed(directId);
-                out.add(v);
-                final List<YtVideo> res = out;
-                MAIN.post(() -> cb.onResult(res, "YouTube oEmbed"));
+                out.add(fetchOEmbed(directId));
+                MAIN.post(() -> cb.onResult(out, "YouTube 직접 링크"));
                 return;
             }
 
-            // 1) YouTube Data API v3 search if key configured
-            if (!apiKey.isEmpty()) {
+            // 1) Direct YouTube InnerTube /search (works out of the box without any API key or Piped server)
+            try {
+                JSONObject body = new JSONObject()
+                        .put("query", q)
+                        .put("context", webContext());
+                JSONObject resp = innertubePost(c, "search", body, "1", "2.20250301.00.00", WEB_UA, true);
+                if (resp != null) collectRenderers(resp, out, new HashSet<>(), 24);
+                if (!out.isEmpty()) src = "YouTube InnerTube";
+            } catch (Throwable ignored) {}
+
+            // 2) YouTube Data API v3 fallback
+            if (out.isEmpty() && !apiKey.isEmpty()) {
                 try {
                     String u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=16&q="
                             + URLEncoder.encode(q, "UTF-8") + "&key=" + URLEncoder.encode(apiKey, "UTF-8");
@@ -347,46 +837,30 @@ final class YouTubeHub {
                 } catch (Throwable ignored) {}
             }
 
-            // 2) Piped JSON Search API
+            // 3) Piped fallback
             if (out.isEmpty() && !pipedBase.isEmpty()) {
-                String[] endpoints = {
-                        pipedBase,
-                        "https://pipedapi.kavin.rocks",
-                        "https://pipedapi.adminforge.de"
-                };
-                for (String ep : endpoints) {
-                    if (ep == null || ep.isEmpty()) continue;
-                    try {
-                        String base = ep.endsWith("/") ? ep.substring(0, ep.length() - 1) : ep;
-                        String u = base + "/search?q=" + URLEncoder.encode(q, "UTF-8") + "&filter=videos";
-                        String json = httpGet(u, 4500);
-                        if (json != null) {
-                            JSONObject root = new JSONObject(json);
-                            JSONArray items = root.optJSONArray("items");
-                            if (items != null) {
-                                for (int i = 0; i < Math.min(20, items.length()); i++) {
-                                    JSONObject o = items.getJSONObject(i);
-                                    String id = extractVideoId("https://www.youtube.com" + o.optString("url"));
-                                    if (id != null) {
-                                        YtVideo v = new YtVideo(id, o.optString("title"), o.optString("uploaderName"));
-                                        v.durationSec = Math.max(0, o.optLong("duration", 0));
-                                        long views = o.optLong("views", -1);
-                                        if (views > 0) v.views = formatCount(views) + "회";
-                                        v.published = o.optString("uploadedDate");
-                                        out.add(v);
-                                    }
+                try {
+                    String base = pipedBase.endsWith("/") ? pipedBase.substring(0, pipedBase.length() - 1) : pipedBase;
+                    String json = httpGet(base + "/search?q=" + URLEncoder.encode(q, "UTF-8") + "&filter=videos", 4000);
+                    if (json != null) {
+                        JSONArray items = new JSONObject(json).optJSONArray("items");
+                        if (items != null) {
+                            for (int i = 0; i < Math.min(20, items.length()); i++) {
+                                JSONObject o = items.getJSONObject(i);
+                                String id = extractVideoId("https://www.youtube.com" + o.optString("url"));
+                                if (id != null) {
+                                    YtVideo v = new YtVideo(id, o.optString("title"), o.optString("uploaderName"));
+                                    v.durationSec = Math.max(0, o.optLong("duration", 0));
+                                    out.add(v);
                                 }
                             }
                         }
-                        if (!out.isEmpty()) {
-                            src = "Piped Search";
-                            break;
-                        }
-                    } catch (Throwable ignored) {}
-                }
+                    }
+                    if (!out.isEmpty()) src = "Piped Search";
+                } catch (Throwable ignored) {}
             }
 
-            // 3) Filter local RSS feeds by query if offline/unreachable
+            // 4) Local RSS fallback
             if (out.isEmpty()) {
                 String ql = q.toLowerCase(Locale.US);
                 for (String[] ch : subscribedChannels(c)) {
@@ -412,22 +886,19 @@ final class YouTubeHub {
             List<YtComment> comments = new ArrayList<>();
             String desc = v.description == null ? "" : v.description;
 
-            // Populate title/author via official oEmbed if missing
             if (v.title.startsWith("YouTube (")) {
                 YtVideo oe = fetchOEmbed(v.id);
                 v.title = oe.title;
                 v.author = oe.author;
             }
 
-            // 1) YouTube Data API v3 commentThreads if key is set
             if (!apiKey.isEmpty()) {
                 try {
                     String u = "https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&maxResults=25&videoId="
                             + URLEncoder.encode(v.id, "UTF-8") + "&key=" + URLEncoder.encode(apiKey, "UTF-8");
                     String json = httpGet(u, 5000);
                     if (json != null) {
-                        JSONObject root = new JSONObject(json);
-                        JSONArray items = root.optJSONArray("items");
+                        JSONArray items = new JSONObject(json).optJSONArray("items");
                         if (items != null) {
                             for (int i = 0; i < items.length(); i++) {
                                 JSONObject top = items.getJSONObject(i).optJSONObject("snippet");
@@ -446,14 +917,12 @@ final class YouTubeHub {
                 } catch (Throwable ignored) {}
             }
 
-            // 2) Piped JSON comments endpoint
             if (comments.isEmpty() && !pipedBase.isEmpty()) {
                 try {
                     String base = pipedBase.endsWith("/") ? pipedBase.substring(0, pipedBase.length() - 1) : pipedBase;
-                    String json = httpGet(base + "/comments/" + v.id, 4500);
+                    String json = httpGet(base + "/comments/" + v.id, 4000);
                     if (json != null) {
-                        JSONObject root = new JSONObject(json);
-                        JSONArray arr = root.optJSONArray("comments");
+                        JSONArray arr = new JSONObject(json).optJSONArray("comments");
                         if (arr != null) {
                             for (int i = 0; i < Math.min(25, arr.length()); i++) {
                                 JSONObject o = arr.getJSONObject(i);
@@ -485,7 +954,6 @@ final class YouTubeHub {
         return new YtVideo(videoId, "YouTube (" + videoId + ")", "YouTube");
     }
 
-    /** Parses official YouTube public Atom feed: https://www.youtube.com/feeds/videos.xml?channel_id=... */
     private static List<YtVideo> fetchChannelRss(String channelId) {
         List<YtVideo> list = new ArrayList<>();
         try {
@@ -595,7 +1063,7 @@ final class YouTubeHub {
     private interface ThumbCb { void onBitmap(Bitmap b); }
 
     // ==================================================================
-    // Play-UI YouTube Browser Page
+    // Play-UI YouTube Browser Page (with Google & microG Account Card)
     // ==================================================================
     static final class YouTubePage extends Page {
         private int category = 0;
@@ -653,7 +1121,55 @@ final class YouTubeHub {
             searchGroup.addCustom(sRow);
             content.addView(searchGroup, Widgets.MW);
 
-            // 2. Category Chips
+            // 2. Google & microG Account Bar
+            Widgets.Group accGroup = new Widgets.Group(m, null);
+            LinearLayout aRow = new LinearLayout(m);
+            aRow.setOrientation(LinearLayout.HORIZONTAL);
+            aRow.setGravity(Gravity.CENTER_VERTICAL);
+            aRow.setPadding(Ui.dp(16), Ui.dp(11), Ui.dp(14), Ui.dp(11));
+
+            boolean signedIn = isGoogleSignedIn(m);
+            MicroGInfo mg = detectMicroGProvider(m);
+            LinearLayout aText = new LinearLayout(m);
+            aText.setOrientation(LinearLayout.VERTICAL);
+            String titleStr = signedIn ? getSignedInLabel(m) : m.getString(R.string.yt_account_title);
+            String subStr = signedIn
+                    ? (mg != null && mg.isMicroG ? m.getString(R.string.yt_microg_detected, mg.label) : "YouTube 세션 활성 · 맞춤 피드 동기화")
+                    : (mg != null && mg.isMicroG ? m.getString(R.string.yt_microg_detected, mg.label) : m.getString(R.string.yt_google_guest));
+            aText.addView(Ui.text(m, titleStr, 14f, Ui.semibold, Ui.text()));
+            TextView subTv = Ui.text(m, subStr, 12f, Ui.regular, signedIn ? 0xFF34C759 : Ui.text2());
+            aText.addView(subTv);
+            aRow.addView(aText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            if (mg != null && mg.isMicroG) {
+                TextView mgBtn = Ui.text(m, "microG", 12f, Ui.semibold, Ui.ACCENT);
+                mgBtn.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+                mgBtn.setBackground(Ui.round(Ui.dark ? 0x22FFFFFF : 0x14000000, 100));
+                mgBtn.setOnClickListener(v -> openMicroGSettings(m));
+                LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                mlp.rightMargin = Ui.dp(8);
+                aRow.addView(mgBtn, mlp);
+            }
+
+            TextView loginBtn = Ui.text(m,
+                    m.getString(signedIn ? R.string.yt_google_signout : R.string.yt_google_signin),
+                    12.5f, Ui.semibold, signedIn ? Ui.text() : 0xFFFFFFFF);
+            loginBtn.setPadding(Ui.dp(13), Ui.dp(7), Ui.dp(13), Ui.dp(7));
+            loginBtn.setBackground(Ui.round(signedIn ? (Ui.dark ? 0x28FFFFFF : 0x18000000) : Ui.ACCENT, 100));
+            loginBtn.setOnClickListener(v -> {
+                if (signedIn) {
+                    signOutGoogle(m);
+                    rebuild();
+                } else {
+                    showGoogleLoginDialog(m, this::rebuild);
+                }
+            });
+            Ui.press(loginBtn, 0.94f);
+            aRow.addView(loginBtn);
+            accGroup.addCustom(aRow);
+            content.addView(accGroup, Widgets.MW);
+
+            // 3. Category Chips
             String[] cats = {
                     m.getString(R.string.yt_cat_trending),
                     m.getString(R.string.yt_cat_music),
@@ -669,7 +1185,7 @@ final class YouTubeHub {
             });
             content.addView(chips, Widgets.MW);
 
-            // 3. Status & Source indicator
+            // 4. Status & Source indicator
             LinearLayout metaRow = new LinearLayout(m);
             metaRow.setGravity(Gravity.CENTER_VERTICAL);
             metaRow.setPadding(Ui.dp(22), Ui.dp(4), Ui.dp(22), Ui.dp(6));
@@ -680,7 +1196,7 @@ final class YouTubeHub {
             metaRow.addView(cfgBtn);
             content.addView(metaRow, Widgets.MW);
 
-            // 4. Video Grid Host
+            // 5. Video Grid Host
             resultsHost = new LinearLayout(m);
             resultsHost.setOrientation(LinearLayout.VERTICAL);
             content.addView(resultsHost, Widgets.MW);
@@ -749,7 +1265,6 @@ final class YouTubeHub {
             tv.bind(v);
             thumbBox.addView(tv, new FrameLayout.LayoutParams(widthPx, h));
 
-            // YouTube badge top-left
             TextView ytBadge = Widgets.pillBadge(m, "YouTube", 0xCCFF0033, 0xFFFFFFFF);
             FrameLayout.LayoutParams ylp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
             ylp.setMargins(Ui.dp(8), Ui.dp(8), 0, 0);
@@ -803,6 +1318,44 @@ final class YouTubeHub {
     static void showSourceSettingsSheet(MainActivity m) {
         LinearLayout form = new LinearLayout(m);
         form.setOrientation(LinearLayout.VERTICAL);
+
+        // Google / microG quick action row inside Source Settings too
+        boolean signed = isGoogleSignedIn(m);
+        MicroGInfo mg = detectMicroGProvider(m);
+        TextView accStatus = Ui.text(m,
+                (signed ? "연결됨: " + getSignedInLabel(m) : "Google 계정 미연결")
+                        + (mg != null && mg.isMicroG ? " · " + mg.label : ""),
+                13f, Ui.medium, signed ? 0xFF34C759 : Ui.text2());
+        accStatus.setPadding(Ui.dp(4), 0, Ui.dp(4), Ui.dp(8));
+        form.addView(accStatus, Widgets.MW);
+
+        LinearLayout btnRow = new LinearLayout(m);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        TextView gBtn = Ui.text(m, m.getString(signed ? R.string.yt_google_signout : R.string.yt_google_signin), 13f, Ui.semibold, 0xFFFFFFFF);
+        gBtn.setPadding(Ui.dp(14), Ui.dp(9), Ui.dp(14), Ui.dp(9));
+        gBtn.setBackground(Ui.round(signed ? 0xFFCC3344 : Ui.ACCENT, 12));
+        gBtn.setOnClickListener(v -> {
+            if (signed) {
+                signOutGoogle(m);
+                m.reloadAll();
+            } else {
+                showGoogleLoginDialog(m, m::reloadAll);
+            }
+        });
+        btnRow.addView(gBtn);
+        if (mg != null && mg.isMicroG) {
+            TextView mBtn = Ui.text(m, m.getString(R.string.yt_microg_open), 13f, Ui.semibold, Ui.ACCENT);
+            mBtn.setPadding(Ui.dp(14), Ui.dp(9), Ui.dp(14), Ui.dp(9));
+            mBtn.setBackground(Ui.round(Ui.dark ? 0x22FFFFFF : 0x14000000, 12));
+            mBtn.setOnClickListener(v -> openMicroGSettings(m));
+            LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            mlp.leftMargin = Ui.dp(8);
+            btnRow.addView(mBtn, mlp);
+        }
+        LinearLayout.LayoutParams brlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        brlp.bottomMargin = Ui.dp(14);
+        form.addView(btnRow, brlp);
+
         String curPiped = MainActivity.prefs(m).getString(PREF_PIPED_URL, DEFAULT_PIPED);
         String curKey = MainActivity.prefs(m).getString(PREF_API_KEY, "");
         EditText pipedEt = Widgets.formField(m, m.getString(R.string.yt_piped_instance), DEFAULT_PIPED, curPiped,
@@ -876,7 +1429,7 @@ final class YouTubeHub {
     }
 
     // ==================================================================
-    // Full-Screen Play-UI YouTube Player Overlay
+    // Full-Screen Play-UI Native YouTube Player Overlay
     // ==================================================================
     static void openVideo(MainActivity m, YtVideo v) {
         if (v == null || v.id.isEmpty()) return;
@@ -897,18 +1450,44 @@ final class YouTubeHub {
         return false;
     }
 
-    static final class YouTubeOverlay extends FrameLayout {
+    static final class YouTubeOverlay extends FrameLayout implements TextureView.SurfaceTextureListener {
         private final MainActivity m;
         private final YtVideo video;
-        private final WebView web;
+        private final TextureView texture;
+        private final WebView webFallback;
+        private final ProgressBar spinner;
+        private final TextView statusPill;
         private final FrameLayout chrome;
-        private final TextView titleView, authorView, speedBadge;
+        private final TextView titleView, authorView, speedBadge, timeLabel, modeBtn;
+        private final Widgets.Slider seekBar;
         private final Icons.IconView playBtn;
-        private boolean playing = true;
+
+        private MediaPlayer mp;
+        private Surface surface;
+        private ResolvedStream currentStream;
+        private boolean webMode = false;
+        private boolean prepared = false;
+        private boolean playing = false;
         private float speed = 1.0f;
+        private int videoW = 16, videoH = 9;
         private boolean chromeVisible = true;
-        private final Ui.Spring openP = new Ui.Spring(360f, 0.84f, 0.002f);
+        private final Ui.Spring openP = new Ui.Spring(400f, 1.0f, 0.002f);
         private boolean closing;
+
+        private final Runnable tickRun = new Runnable() {
+            @Override public void run() {
+                if (closing || webMode) return;
+                if (mp != null && prepared) {
+                    try {
+                        int pos = mp.getCurrentPosition();
+                        int dur = Math.max(1, mp.getDuration());
+                        seekBar.setValue(Ui.clamp((float) pos / dur, 0f, 1f));
+                        timeLabel.setText(Ui.time(pos) + " / " + Ui.time(dur));
+                    } catch (Throwable ignored) {}
+                }
+                MAIN.postDelayed(this, 400);
+            }
+        };
 
         YouTubeOverlay(MainActivity activity, YtVideo v) {
             super(activity);
@@ -917,21 +1496,47 @@ final class YouTubeHub {
             setBackgroundColor(0xFF000000);
             setClickable(true);
 
-            // 1. Official YouTube IFrame Embed WebView
-            web = new WebView(m);
-            web.setBackgroundColor(Color.BLACK);
-            WebSettings ws = web.getSettings();
+            // 1. Native TextureView video surface
+            texture = new TextureView(m);
+            texture.setSurfaceTextureListener(this);
+            texture.setOnClickListener(vv -> toggleChrome());
+            addView(texture, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            // 2. Mobile Web fallback view (hidden unless DRM/fallback triggered or toggled)
+            webFallback = new WebView(m);
+            webFallback.setBackgroundColor(Color.BLACK);
+            webFallback.setVisibility(GONE);
+            WebSettings ws = webFallback.getSettings();
             ws.setJavaScriptEnabled(true);
             ws.setDomStorageEnabled(true);
             ws.setMediaPlaybackRequiresUserGesture(false);
-            ws.setLoadWithOverviewMode(true);
-            ws.setUseWideViewPort(true);
-            web.setWebChromeClient(new WebChromeClient());
-            web.setWebViewClient(new WebViewClient());
-            web.addJavascriptInterface(new JsBridge(), "PlayBridge");
-            addView(web, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            ws.setUserAgentString(WEB_UA);
+            CookieManager cm = CookieManager.getInstance();
+            cm.setAcceptCookie(true);
+            cm.setAcceptThirdPartyCookies(webFallback, true);
+            webFallback.setWebChromeClient(new WebChromeClient());
+            webFallback.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                    return false;
+                }
+            });
+            addView(webFallback, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-            // 2. Play Glass / G-style Chrome overlay
+            // 3. Center loading indicator + status pill
+            LinearLayout centerBox = new LinearLayout(m);
+            centerBox.setOrientation(LinearLayout.VERTICAL);
+            centerBox.setGravity(Gravity.CENTER);
+            spinner = new ProgressBar(m);
+            centerBox.addView(spinner, new LinearLayout.LayoutParams(Ui.dp(42), Ui.dp(42)));
+            statusPill = Ui.text(m, m.getString(R.string.yt_resolving_stream), 12.5f, Ui.medium, 0xDDFFFFFF);
+            statusPill.setPadding(Ui.dp(14), Ui.dp(6), Ui.dp(14), Ui.dp(6));
+            statusPill.setBackground(Ui.round(0x88000000, 100));
+            LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            stlp.topMargin = Ui.dp(10);
+            centerBox.addView(statusPill, stlp);
+            addView(centerBox, new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+
+            // 4. Play Glass / G-style Chrome overlay
             chrome = new FrameLayout(m);
             addView(chrome, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -948,8 +1553,7 @@ final class YouTubeHub {
                 topBar.setPadding(Ui.dp(8), Ui.dp(8), Ui.dp(8), Ui.dp(16));
             }
 
-            Icons.IconView backBtn = iconBtn(Icons.BACK, vv -> close());
-            topBar.addView(backBtn);
+            topBar.addView(iconBtn(Icons.BACK, vv -> close()));
 
             LinearLayout titleCol = new LinearLayout(m);
             titleCol.setOrientation(LinearLayout.VERTICAL);
@@ -960,6 +1564,11 @@ final class YouTubeHub {
             titleCol.addView(authorView);
             topBar.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+            modeBtn = Ui.text(m, m.getString(R.string.yt_mode_web), 11.5f, Ui.semibold, 0xFFFFFFFF);
+            modeBtn.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            modeBtn.setBackground(Ui.round(0x33FFFFFF, 100));
+            modeBtn.setOnClickListener(vv -> switchPlaybackMode(!webMode));
+            topBar.addView(modeBtn);
             topBar.addView(iconBtn(Icons.PIP, vv -> m.enterPip()));
             topBar.addView(iconBtn(Icons.INFO, vv -> showCommentsAndInfoSheet()));
             topBar.addView(iconBtn(Icons.MORE, this::showMoreSheet));
@@ -970,33 +1579,47 @@ final class YouTubeHub {
             tlp.setMargins(sideSafe, topSafe, sideSafe, 0);
             chrome.addView(topBar, tlp);
 
-            // Bottom floating Play control bar
+            // Bottom floating Play control card (seekbar + transport controls)
+            LinearLayout botCard = new LinearLayout(m);
+            botCard.setOrientation(LinearLayout.VERTICAL);
+            botCard.setBackground(glassCapsule(26));
+            botCard.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
+
+            seekBar = new Widgets.Slider(m, 0f);
+            seekBar.darkSurface = true;
+            seekBar.change = (val, fromUser) -> {
+                if (fromUser && mp != null && prepared) {
+                    try {
+                        int dur = mp.getDuration();
+                        if (dur > 0) mp.seekTo((int) (dur * val));
+                    } catch (Throwable ignored) {}
+                }
+            };
+            botCard.addView(seekBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(28)));
+
             LinearLayout botBar = new LinearLayout(m);
             botBar.setOrientation(LinearLayout.HORIZONTAL);
             botBar.setGravity(Gravity.CENTER_VERTICAL);
-            botBar.setBackground(glassCapsule(26));
-            botBar.setPadding(Ui.dp(14), Ui.dp(8), Ui.dp(14), Ui.dp(8));
 
             playBtn = iconBtn(Icons.PAUSE, vv -> togglePlay());
             botBar.addView(playBtn);
             botBar.addView(iconBtn(Icons.REWIND, vv -> seekDelta(-10)));
             botBar.addView(iconBtn(Icons.FORWARD, vv -> seekDelta(10)));
 
-            speedBadge = Ui.text(m, "1.0x", 13f, Ui.bold, 0xFFFFFFFF);
-            speedBadge.setGravity(Gravity.CENTER);
-            speedBadge.setPadding(Ui.dp(12), Ui.dp(6), Ui.dp(12), Ui.dp(6));
-            speedBadge.setOnClickListener(this::showSpeedSheet);
-            botBar.addView(speedBadge, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            timeLabel = Ui.text(m, "0:00 / 0:00", 12f, Ui.medium, 0xDDFFFFFF);
+            timeLabel.setPadding(Ui.dp(6), 0, Ui.dp(6), 0);
+            botBar.addView(timeLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            TextView commentsBtn = Ui.text(m, m.getString(R.string.yt_comments_info), 12.5f, Ui.semibold, 0xFFFFFFFF);
-            commentsBtn.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
-            commentsBtn.setBackground(Ui.round(0x33FFFFFF, 100));
-            commentsBtn.setOnClickListener(vv -> showCommentsAndInfoSheet());
-            botBar.addView(commentsBtn);
+            speedBadge = Ui.text(m, "1.0x", 12.5f, Ui.bold, 0xFFFFFFFF);
+            speedBadge.setGravity(Gravity.CENTER);
+            speedBadge.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
+            speedBadge.setBackground(Ui.round(0x28FFFFFF, 100));
+            speedBadge.setOnClickListener(this::showSpeedSheet);
+            botBar.addView(speedBadge);
 
             if (isNewPipeInstalled(m)) {
-                TextView npBtn = Ui.text(m, "NewPipe", 12.5f, Ui.bold, 0xFFFFFFFF);
-                npBtn.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
+                TextView npBtn = Ui.text(m, "NewPipe", 12f, Ui.bold, 0xFFFFFFFF);
+                npBtn.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
                 npBtn.setBackground(Ui.round(0xCCFF0033, 100));
                 npBtn.setOnClickListener(vv -> openInNewPipe(m, v.id));
                 LinearLayout.LayoutParams nplp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1004,26 +1627,51 @@ final class YouTubeHub {
                 botBar.addView(npBtn, nplp);
             }
 
+            botCard.addView(botBar, Widgets.MW);
+
             LayoutParams blp = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
             blp.setMargins(sideSafe, 0, sideSafe, Math.max(Ui.navInset, Ui.dp(12)) + Ui.dp(12));
-            chrome.addView(botBar, blp);
+            chrome.addView(botCard, blp);
 
-            loadEmbedPlayer(v.id);
+            // Start direct InnerTube stream resolution immediately
+            resolveStream(m, v.id, stream -> {
+                if (closing) return;
+                currentStream = stream;
+                if (stream.title != null && !stream.title.isEmpty()) {
+                    video.title = stream.title;
+                    titleView.setText(video.title);
+                }
+                if (stream.author != null && !stream.author.isEmpty()) {
+                    video.author = stream.author;
+                }
+                if (stream.description != null && !stream.description.isEmpty()) {
+                    video.description = stream.description;
+                }
+                if (stream.url != null && !stream.url.isEmpty()) {
+                    authorView.setText(video.author + " · " + stream.qualityLabel);
+                    startNativeStream(stream);
+                } else {
+                    // Graceful automatic fallback to authenticated mobile YouTube web player
+                    Toast.makeText(m, m.getString(R.string.yt_stream_fallback_web), Toast.LENGTH_SHORT).show();
+                    switchPlaybackMode(true);
+                }
+            });
 
-            // Fetch metadata & comments asynchronously
             loadCommentsAndMeta(m, v, (comments, desc) -> {
+                if (closing) return;
                 titleView.setText(v.title);
-                authorView.setText(v.author);
+                if (currentStream == null || currentStream.qualityLabel == null) authorView.setText(v.author);
             });
 
             openP.onUpdate = () -> {
                 float k = Ui.clamp(openP.value, 0f, 1f);
                 setAlpha(k);
-                setTranslationY((1f - k) * Ui.dpf(32));
+                setTranslationY((1f - k) * Ui.dpf(28));
             };
             openP.onEnd = () -> {
                 if (closing) {
-                    try { web.destroy(); } catch (Throwable ignored) {}
+                    releasePlayer();
+                    try { webFallback.destroy(); } catch (Throwable ignored) {}
                     m.root.removeView(this);
                 }
             };
@@ -1031,45 +1679,173 @@ final class YouTubeHub {
             openP.to(1f);
         }
 
-        private void loadEmbedPlayer(String videoId) {
-            String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'>"
-                    + "<style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden;}"
-                    + "#player{width:100%;height:100%;border:0;}</style></head><body>"
-                    + "<div id='player'></div>"
-                    + "<script src='https://www.youtube.com/iframe_api'></script>"
-                    + "<script>"
-                    + "var player;"
-                    + "function onYouTubeIframeAPIReady(){"
-                    + "  player=new YT.Player('player',{videoId:'" + videoId + "',"
-                    + "    playerVars:{autoplay:1,playsinline:1,rel:0,modestbranding:1,cc_load_policy:1},"
-                    + "    events:{onStateChange:function(e){if(window.PlayBridge)PlayBridge.onState(e.data);}}"
-                    + "  });"
-                    + "}"
-                    + "function playToggle(){if(!player)return;var s=player.getPlayerState();if(s===1)player.pauseVideo();else player.playVideo();}"
-                    + "function seekDelta(d){if(!player)return;player.seekTo(Math.max(0,player.getCurrentTime()+d),true);}"
-                    + "function setRate(r){if(!player)return;player.setPlaybackRate(r);}"
-                    + "</script></body></html>";
-            web.loadDataWithBaseURL("https://www.youtube-nocookie.com", html, "text/html", "UTF-8", null);
+        private void toggleChrome() {
+            chromeVisible = !chromeVisible;
+            chrome.animate().alpha(chromeVisible ? 1f : 0f).setDuration(180).start();
         }
 
-        private final class JsBridge {
-            @JavascriptInterface
-            public void onState(int state) {
-                MAIN.post(() -> {
-                    playing = (state == 1);
-                    playBtn.set(playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
+        private void startNativeStream(ResolvedStream stream) {
+            if (closing || webMode) return;
+            releasePlayer();
+            try {
+                mp = new MediaPlayer();
+                mp.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build());
+                Map<String, String> headers = new HashMap<>();
+                headers.put("User-Agent", "IOS".equals(stream.clientUsed) ? IOS_UA : VR_UA);
+                headers.put("Origin", YT_ORIGIN);
+                String ck = getGoogleCookie(m);
+                if (!ck.isEmpty()) headers.put("Cookie", ck);
+                mp.setDataSource(m, Uri.parse(stream.url), headers);
+                if (surface != null) mp.setSurface(surface);
+                mp.setOnVideoSizeChangedListener((player, w, h) -> {
+                    if (w > 0 && h > 0) {
+                        videoW = w;
+                        videoH = h;
+                        updateTextureTransform();
+                    }
                 });
+                mp.setOnPreparedListener(player -> {
+                    if (closing) return;
+                    prepared = true;
+                    playing = true;
+                    spinner.setVisibility(GONE);
+                    statusPill.setVisibility(GONE);
+                    playBtn.set(Icons.PAUSE, 0xFFFFFFFF);
+                    try {
+                        NpuAudio.apply(m);
+                        if (Math.abs(speed - 1f) > 0.01f) {
+                            PlaybackParams pp = player.getPlaybackParams();
+                            pp.setSpeed(speed);
+                            player.setPlaybackParams(pp);
+                        }
+                    } catch (Throwable ignored) {}
+                    player.start();
+                    MAIN.removeCallbacks(tickRun);
+                    MAIN.post(tickRun);
+                });
+                mp.setOnCompletionListener(player -> {
+                    playing = false;
+                    playBtn.set(Icons.PLAY, 0xFFFFFFFF);
+                });
+                mp.setOnErrorListener((player, what, extra) -> {
+                    // Auto fallback to mobile web view if MediaPlayer rejects codec/stream
+                    if (!closing && !webMode) {
+                        switchPlaybackMode(true);
+                    }
+                    return true;
+                });
+                mp.prepareAsync();
+            } catch (Throwable t) {
+                switchPlaybackMode(true);
             }
         }
 
+        private void switchPlaybackMode(boolean toWeb) {
+            webMode = toWeb;
+            if (webMode) {
+                releasePlayer();
+                MAIN.removeCallbacks(tickRun);
+                spinner.setVisibility(GONE);
+                statusPill.setVisibility(GONE);
+                texture.setVisibility(GONE);
+                seekBar.setVisibility(GONE);
+                webFallback.setVisibility(VISIBLE);
+                modeBtn.setText(m.getString(R.string.yt_mode_native));
+                String ck = getGoogleCookie(m);
+                if (!ck.isEmpty()) {
+                    CookieManager cm = CookieManager.getInstance();
+                    for (String part : ck.split(";")) {
+                        String trimmed = part.trim();
+                        if (!trimmed.isEmpty()) cm.setCookie("https://m.youtube.com", trimmed);
+                    }
+                    cm.flush();
+                }
+                webFallback.loadUrl("https://m.youtube.com/watch?v=" + video.id);
+            } else {
+                webFallback.loadUrl("about:blank");
+                webFallback.setVisibility(GONE);
+                texture.setVisibility(VISIBLE);
+                seekBar.setVisibility(VISIBLE);
+                modeBtn.setText(m.getString(R.string.yt_mode_web));
+                if (currentStream != null && currentStream.url != null) {
+                    spinner.setVisibility(VISIBLE);
+                    statusPill.setVisibility(VISIBLE);
+                    startNativeStream(currentStream);
+                }
+            }
+        }
+
+        private void updateTextureTransform() {
+            int vw = texture.getWidth(), vh = texture.getHeight();
+            if (vw <= 0 || vh <= 0 || videoW <= 0 || videoH <= 0) return;
+            float viewRatio = (float) vw / vh;
+            float vidRatio = (float) videoW / videoH;
+            float sx = 1f, sy = 1f;
+            if (vidRatio > viewRatio) sy = viewRatio / vidRatio;
+            else sx = vidRatio / viewRatio;
+            Matrix mx = new Matrix();
+            mx.setScale(sx, sy, vw / 2f, vh / 2f);
+            texture.setTransform(mx);
+        }
+
+        @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
+            surface = new Surface(st);
+            if (mp != null) {
+                try { mp.setSurface(surface); } catch (Throwable ignored) {}
+            }
+            updateTextureTransform();
+        }
+
+        @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) {
+            updateTextureTransform();
+        }
+
+        @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+            if (mp != null) {
+                try { mp.setSurface(null); } catch (Throwable ignored) {}
+            }
+            if (surface != null) {
+                surface.release();
+                surface = null;
+            }
+            return true;
+        }
+
+        @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
+
         private void togglePlay() {
-            web.evaluateJavascript("playToggle();", null);
-            playing = !playing;
-            playBtn.set(playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
+            if (webMode) {
+                webFallback.evaluateJavascript("(function(){var v=document.querySelector('video');if(!v)return;if(v.paused)v.play();else v.pause();})();", null);
+                playing = !playing;
+                playBtn.set(playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
+                return;
+            }
+            if (mp == null || !prepared) return;
+            try {
+                if (mp.isPlaying()) {
+                    mp.pause();
+                    playing = false;
+                } else {
+                    mp.start();
+                    playing = true;
+                }
+                playBtn.set(playing ? Icons.PAUSE : Icons.PLAY, 0xFFFFFFFF);
+            } catch (Throwable ignored) {}
         }
 
         private void seekDelta(int sec) {
-            web.evaluateJavascript("seekDelta(" + sec + ");", null);
+            if (webMode) {
+                webFallback.evaluateJavascript("(function(){var v=document.querySelector('video');if(v)v.currentTime=Math.max(0,v.currentTime+" + sec + ");})();", null);
+                return;
+            }
+            if (mp == null || !prepared) return;
+            try {
+                int target = Math.max(0, Math.min(mp.getDuration(), mp.getCurrentPosition() + sec * 1000));
+                mp.seekTo(target);
+            } catch (Throwable ignored) {}
         }
 
         private void showSpeedSheet(View anchor) {
@@ -1080,7 +1856,15 @@ final class YouTubeHub {
             Widgets.pickSheet(m, anchor, m.getString(R.string.speed), labels, sel, idx -> {
                 speed = rates[idx];
                 speedBadge.setText(labels[idx]);
-                web.evaluateJavascript("setRate(" + speed + ");", null);
+                if (webMode) {
+                    webFallback.evaluateJavascript("(function(){var v=document.querySelector('video');if(v)v.playbackRate=" + speed + ";})();", null);
+                } else if (mp != null && prepared) {
+                    try {
+                        PlaybackParams pp = mp.getPlaybackParams();
+                        pp.setSpeed(speed);
+                        mp.setPlaybackParams(pp);
+                    } catch (Throwable ignored) {}
+                }
             });
         }
 
@@ -1095,6 +1879,8 @@ final class YouTubeHub {
                 close();
                 m.push(new Settings.BitPerfectAssistPage(m));
             }));
+            es.add(new GlassMenu.Entry(webMode ? m.getString(R.string.yt_mode_native) : m.getString(R.string.yt_mode_web),
+                    Icons.GLOBE, webMode, () -> switchPlaybackMode(!webMode)));
             es.add(new GlassMenu.Entry(m.getString(R.string.yt_comments_info), Icons.INFO, false, this::showCommentsAndInfoSheet));
             if (isNewPipeInstalled(m)) {
                 es.add(new GlassMenu.Entry(m.getString(R.string.yt_open_newpipe), Icons.YOUTUBE, false, () -> openInNewPipe(m, video.id)));
@@ -1120,8 +1906,7 @@ final class YouTubeHub {
 
             LinearLayout commentsList = new LinearLayout(m);
             commentsList.setOrientation(LinearLayout.VERTICAL);
-            TextView loading = Ui.text(m, m.getString(R.string.yt_loading_comments), 13.5f, Ui.regular, 0xB3FFFFFF);
-            commentsList.addView(loading);
+            commentsList.addView(Ui.text(m, m.getString(R.string.yt_loading_comments), 13.5f, Ui.regular, 0xB3FFFFFF));
             box.addView(commentsList, Widgets.MW);
 
             loadCommentsAndMeta(m, video, (comments, desc) -> {
@@ -1180,10 +1965,22 @@ final class YouTubeHub {
             return iv;
         }
 
+        private void releasePlayer() {
+            prepared = false;
+            playing = false;
+            if (mp != null) {
+                try { mp.stop(); } catch (Throwable ignored) {}
+                try { mp.release(); } catch (Throwable ignored) {}
+                mp = null;
+            }
+        }
+
         void close() {
             if (closing) return;
             closing = true;
-            try { web.loadUrl("about:blank"); } catch (Throwable ignored) {}
+            MAIN.removeCallbacks(tickRun);
+            releasePlayer();
+            try { webFallback.loadUrl("about:blank"); } catch (Throwable ignored) {}
             openP.to(0f);
         }
     }

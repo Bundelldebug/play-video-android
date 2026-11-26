@@ -123,7 +123,9 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.6", MainActivity.VERSION);
+        assertEquals("9.5.7", MainActivity.VERSION);
+        assertNotNull(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com"));
+        assertTrue(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com").startsWith("SAPISIDHASH "));
         assertEquals("Interstellar 2014", OnlineSubtitle.cleanQuery("[Sub] Interstellar.2014.2160p.4K.UHD.BluRay.x265.mkv"));
         assertEquals(25, NpuAudio.SUPPORTED_CHIPS.length);
         assertNotNull(NpuAudio.displaySoc(act));

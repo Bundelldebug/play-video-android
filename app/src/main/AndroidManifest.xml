@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.oneuibook.play"
-    android:versionCode="7"
-    android:versionName="9.5.6">
+    android:versionCode="8"
+    android:versionName="9.5.7">
 
     <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
 
     <queries>
         <package android:name="org.schabi.newpipe" />
+        <package android:name="app.revanced.android.gms" />
+        <package android:name="org.microg.gms" />
+        <package android:name="com.mgoogle.android.gms" />
+        <package android:name="com.google.android.gms" />
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
