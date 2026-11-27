@@ -325,4 +325,17 @@
     <string name="yt_quality_auto">자동 (HLS HD)</string>
     <string name="yt_microg_signin">microG 계정으로 로그인</string>
     <string name="yt_cat_all">전체</string>
+    <string name="yt_cat_device">기기 동영상</string>
+    <string name="yt_tab_feed">홈</string>
+    <string name="yt_tab_subs">구독</string>
+    <string name="yt_tab_channels">채널</string>
+    <string name="yt_tab_playlists">재생목록</string>
+    <string name="yt_subscribe">구독</string>
+    <string name="yt_subscribed">구독 중</string>
+    <string name="yt_like">좋아요</string>
+    <string name="yt_share">공유</string>
+    <string name="yt_save_playlist">재생목록</string>
+    <string name="yt_up_next">다음 동영상</string>
+    <string name="yt_watch_later">나중에 볼 동영상</string>
+    <string name="yt_liked_videos">좋아요 표시한 동영상</string>
 </resources>

@@ -63,17 +63,23 @@ final class Header extends View {
         titlePaint.setTypeface(Ui.bold);
         titlePaint.setTextSize(Ui.sp(17));
         mask.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
-        pillGlass.blurDp = 10;
+        pillGlass.blurDp = Ui.barBlur();
         pillGlass.refractDp = 15;
         pillGlass.edgeDp = 20;
+        pillGlass.outerDp = 5;
         pillGlass.outerRefractDp = 11;
         pillGlass.vibrance = 1.35f;
         pillGlass.rim = 0.32f;
+        pillGlass.edgeDark = 0.32f;
         pillGlass.shadowAlpha = 0.07f;
-        backGlass.blurDp = 10;
-        backGlass.refractDp = 6;
-        backGlass.edgeDp = 12;
-        backGlass.rim = 0.25f;
+        backGlass.blurDp = Ui.barBlur();
+        backGlass.refractDp = 15;
+        backGlass.edgeDp = 20;
+        backGlass.outerDp = 5;
+        backGlass.outerRefractDp = 11;
+        backGlass.vibrance = 1.35f;
+        backGlass.rim = 0.32f;
+        backGlass.edgeDark = 0.32f;
         backGlass.shadowAlpha = 0.07f;
         press.onUpdate = this::invalidate;
         morph.onUpdate = this::invalidate;
@@ -143,8 +149,8 @@ final class Header extends View {
 
     private void layoutRects() {
         float top = Ui.statusInset + Ui.dpf(14);
-        int rw = getRootView().getWidth() > 0 ? getRootView().getWidth() : Ui.screenW;
-        int rh = getRootView().getHeight() > 0 ? getRootView().getHeight() : Ui.screenH;
+        int rw = getWidth() > 0 ? getWidth() : Ui.screenW;
+        int rh = Ui.screenH > 0 ? Ui.screenH : (getRootView().getHeight() > 0 ? getRootView().getHeight() : getHeight());
         boolean rail = Dock.railFor(rw, rh);
         vertical = rail && icons.length > 1;
         float h = Ui.dpf(rail ? 60 : 46);

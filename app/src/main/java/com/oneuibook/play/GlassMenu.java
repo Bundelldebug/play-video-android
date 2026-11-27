@@ -282,13 +282,15 @@ final class GlassMenu extends FrameLayout {
     }
 
     private void applyMaterial(float k) {
-        glass.tint = overPlayer() ? 0xD418181C : Ui.barTint();
+        glass.tint = overPlayer() ? 0xD418181C : Ui.menuTint();
         glass.blurDp = Ui.barBlur();
         glass.refractDp = Ui.lerp(15f, 17f, k);
         glass.edgeDp = Ui.lerp(20f, 26f, k);
         glass.outerDp = Ui.lerp(5f, 7f, k);
         glass.outerRefractDp = Ui.lerp(11f, 12f, k);
         glass.rim = Ui.lerp(0.32f, 0.4f, k);
+        glass.edgeDark = 0.32f;
+        glass.vibrance = 1.35f;
         glass.shadowAlpha = Ui.lerp(fromHeader ? 0.07f : 0f, 0.22f, k);
         glass.chroma = 0f;
         glass.alpha = fromHeader ? 1f : Ui.clamp(p.value / 0.1f, 0f, 1f);

@@ -25,7 +25,9 @@ final class Icons {
             GLOBE = 49, REFRESH = 50, AB = 51, AUDIO = 52,
             WAVE = 53, DOWNLOAD = 54, DEVICE = 55, DAC = 56, EARBUDS = 57,
             BUDS = 58, BUDS2 = 59, BUDS4 = 60, BUDS_LIVE = 61, BUDS_ON = 62,
-            CHEVRON_UP = 63, YOUTUBE = 64, PROSCALER = 65;
+            CHEVRON_UP = 63, YOUTUBE = 64, PROSCALER = 65,
+            THUMB_UP = 66, THUMB_UP_FILL = 67, SUBSCRIPTIONS = 68, CHANNEL = 69,
+            COMMENT = 70, SHARE = 71, FULLSCREEN = 72, FULLSCREEN_EXIT = 73;
 
     private static final Paint P = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final CornerPathEffect ROUND1 = new CornerPathEffect(1.3f);
@@ -483,6 +485,71 @@ final class Icons {
                 R.set(3.2f, 4.8f, 20.8f, 19.2f); c.drawRoundRect(R, 3.2f, 3.2f, P);
                 p.moveTo(7.5f, 15.5f); p.lineTo(16.5f, 8.5f);
                 p.moveTo(12.5f, 8.5f); p.lineTo(16.5f, 8.5f); p.lineTo(16.5f, 12.5f);
+                c.drawPath(p, P);
+                break;
+            case THUMB_UP:
+            case THUMB_UP_FILL:
+                if (id == THUMB_UP_FILL) fill(); else stroke(1.85f);
+                p.moveTo(7.2f, 10.5f); p.lineTo(11.3f, 4.2f);
+                p.quadTo(12.8f, 3.8f, 13.4f, 5.4f); p.lineTo(12.7f, 9.5f);
+                p.lineTo(18.6f, 9.5f); p.quadTo(20.4f, 9.7f, 20.1f, 11.6f);
+                p.lineTo(18.8f, 18.2f); p.quadTo(18.4f, 19.8f, 16.6f, 19.8f);
+                p.lineTo(7.2f, 19.8f); p.close();
+                c.drawPath(p, P);
+                R.set(3.2f, 10.4f, 6.2f, 19.8f);
+                c.drawRoundRect(R, 1.3f, 1.3f, P);
+                break;
+            case SUBSCRIPTIONS:
+                stroke(1.85f);
+                c.drawLine(6.5f, 3.8f, 17.5f, 3.8f, P);
+                c.drawLine(4.5f, 7.0f, 19.5f, 7.0f, P);
+                R.set(2.8f, 10.2f, 21.2f, 20.2f); c.drawRoundRect(R, 2.8f, 2.8f, P);
+                fill(); P.setPathEffect(ROUND1);
+                p.moveTo(10.3f, 12.8f); p.lineTo(15.2f, 15.2f); p.lineTo(10.3f, 17.6f); p.close();
+                c.drawPath(p, P);
+                break;
+            case CHANNEL:
+                stroke(1.9f);
+                c.drawCircle(12f, 8.2f, 3.8f, P);
+                p.moveTo(4.6f, 19.8f);
+                p.cubicTo(5.6f, 15.0f, 18.4f, 15.0f, 19.4f, 19.8f);
+                c.drawPath(p, P);
+                break;
+            case COMMENT:
+                stroke(1.85f);
+                p.moveTo(4.2f, 5.4f); p.lineTo(19.8f, 5.4f); p.quadTo(21.2f, 5.4f, 21.2f, 6.8f);
+                p.lineTo(21.2f, 15.4f); p.quadTo(21.2f, 16.8f, 19.8f, 16.8f);
+                p.lineTo(9.4f, 16.8f); p.lineTo(5.2f, 20.2f); p.lineTo(5.2f, 16.8f);
+                p.lineTo(4.2f, 16.8f); p.quadTo(2.8f, 16.8f, 2.8f, 15.4f);
+                p.lineTo(2.8f, 6.8f); p.quadTo(2.8f, 5.4f, 4.2f, 5.4f); p.close();
+                c.drawPath(p, P);
+                c.drawLine(7.2f, 9.6f, 16.8f, 9.6f, P);
+                c.drawLine(7.2f, 13.0f, 13.6f, 13.0f, P);
+                break;
+            case SHARE:
+                stroke(1.95f);
+                c.drawLine(12f, 15.2f, 12f, 4.4f, P);
+                p.moveTo(8.0f, 8.2f); p.lineTo(12f, 4.2f); p.lineTo(16.0f, 8.2f);
+                c.drawPath(p, P);
+                p.reset();
+                p.moveTo(5.5f, 12.2f); p.lineTo(5.5f, 18.5f); p.quadTo(5.5f, 20f, 7f, 20f);
+                p.lineTo(17f, 20f); p.quadTo(18.5f, 20f, 18.5f, 18.5f); p.lineTo(18.5f, 12.2f);
+                c.drawPath(p, P);
+                break;
+            case FULLSCREEN:
+                stroke(2.0f);
+                p.moveTo(4.5f, 9.5f); p.lineTo(4.5f, 4.5f); p.lineTo(9.5f, 4.5f);
+                p.moveTo(14.5f, 4.5f); p.lineTo(19.5f, 4.5f); p.lineTo(19.5f, 9.5f);
+                p.moveTo(19.5f, 14.5f); p.lineTo(19.5f, 19.5f); p.lineTo(14.5f, 19.5f);
+                p.moveTo(9.5f, 19.5f); p.lineTo(4.5f, 19.5f); p.lineTo(4.5f, 14.5f);
+                c.drawPath(p, P);
+                break;
+            case FULLSCREEN_EXIT:
+                stroke(2.0f);
+                p.moveTo(9.2f, 4.5f); p.lineTo(9.2f, 9.2f); p.lineTo(4.5f, 9.2f);
+                p.moveTo(14.8f, 4.5f); p.lineTo(14.8f, 9.2f); p.lineTo(19.5f, 9.2f);
+                p.moveTo(19.5f, 14.8f); p.lineTo(14.8f, 14.8f); p.lineTo(14.8f, 19.5f);
+                p.moveTo(4.5f, 14.8f); p.lineTo(9.2f, 14.8f); p.lineTo(9.2f, 19.5f);
                 c.drawPath(p, P);
                 break;
         }

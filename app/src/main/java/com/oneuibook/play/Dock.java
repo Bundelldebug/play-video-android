@@ -113,7 +113,7 @@ final class Dock extends FrameLayout {
         hintPaint.setTextSize(Ui.sp(15.5f));
         searchHintText = c.getString(R.string.search_hint);
 
-        barGlass.blurDp = 2.5f;
+        barGlass.blurDp = Ui.barBlur();
         barGlass.refractDp = 17f;
         barGlass.edgeDp = 26f;
         barGlass.outerDp = 7f;
@@ -121,27 +121,30 @@ final class Dock extends FrameLayout {
         barGlass.chroma = 0f;
         barGlass.vibrance = 1.35f;
         barGlass.rim = 0.32f;
+        barGlass.edgeDark = 0.32f;
+        barGlass.shadowAlpha = 0.16f;
 
-        miniGlass.blurDp = 2f;
+        miniGlass.blurDp = Ui.barBlur();
         miniGlass.refractDp = 17f;
         miniGlass.edgeDp = 24f;
         miniGlass.outerDp = 7f;
         miniGlass.outerRefractDp = 12f;
         miniGlass.chroma = 0f;
-        miniGlass.vibrance = 1.5f;
+        miniGlass.vibrance = 1.35f;
         miniGlass.rim = 0.32f;
+        miniGlass.edgeDark = 0.32f;
+        miniGlass.shadowAlpha = 0.16f;
 
         lensGlass.blur = false;
-        lensGlass.refractDp = 16f;
-        lensGlass.edgeDp = 24f;
-        lensGlass.outerDp = 7.5f;
-        lensGlass.outerRefractDp = 13f;
-        lensGlass.depthEffect = 0.65f;
-        lensGlass.chroma = 0.95f;
-        lensGlass.rim = 0.56f;
-        lensGlass.tint = Ui.dark ? 0x10FFFFFF : 0x0AFFFFFF;
-        lensGlass.shadowAlpha = 0.18f;
-        lensGlass.strokeColor = Ui.dark ? 0x42FFFFFF : 0x1C000000;
+        lensGlass.refractDp = 22f;
+        lensGlass.edgeDp = 28f;
+        lensGlass.outerDp = 8f;
+        lensGlass.outerRefractDp = 14f;
+        lensGlass.chroma = 0.9f;
+        lensGlass.rim = 0.6f;
+        lensGlass.tint = Ui.dark ? 0x0FFFFFFF : 0x0AFFFFFF;
+        lensGlass.shadowAlpha = 0.16f;
+        lensGlass.strokeColor = Ui.dark ? 0x40FFFFFF : 0x1A000000;
 
         Runnable inv = this::invalidate;
         lensX.onUpdate = inv;
@@ -520,10 +523,11 @@ final class Dock extends FrameLayout {
                 try { drawTabItems(rc, Ui.ACCENT, Ui.ACCENT, true); } finally { contentNode.endRecording(); }
                 lensGlass.extra = contentNode;
                 lensGlass.shapes(lens, Math.min(lens.width(), lens.height()) / 2f, null, 0, null, 0);
-                lensGlass.mag = Ui.lerp(1f, 1.20f, l);
+                lensGlass.mag = 1f + 0.14f * l;
                 lensGlass.magX = lens.centerX();
                 lensGlass.magY = lens.centerY();
-                lensGlass.innerShadow = l;
+                lensGlass.tint = Ui.dark ? 0x0FFFFFFF : 0x0AFFFFFF;
+                lensGlass.strokeColor = Ui.dark ? 0x40FFFFFF : 0x1A000000;
                 lensGlass.alpha = 1f;
                 drawTabItems(c, fg, fg2, false);
                 lensGlass.draw(c, this, backdrop);
@@ -584,22 +588,14 @@ final class Dock extends FrameLayout {
             if (search > 0.5f) {
                 float closeA = (search - 0.5f) * 2f;
                 Icons.draw(c, Icons.CLOSE, sb.right - Ui.dpf(24), sb.centerY(), Ui.dpf(18), Ui.alpha(fg, closeA));
-                // Animated typing gradient hint ("무엇을 찾고 있나요?")
+                // Clean Prism-style search hint (no AI rainbow shimmer)
                 if (field.getText().length() == 0 && searchHintText != null && !searchHintText.isEmpty()) {
-                    int total = searchHintText.length();
-                    int shown = Math.max(1, Math.min(total, Math.round(total * (hintType <= 0f ? 1f : hintType))));
-                    String visible = searchHintText.substring(0, shown);
                     float hx = sb.left + Ui.dpf(44);
                     Paint.FontMetrics fm = hintPaint.getFontMetrics();
                     float hy = sb.centerY() - (fm.ascent + fm.descent) / 2f;
-                    float tw = Math.max(Ui.dpf(140), hintPaint.measureText(searchHintText));
-                    float shift = (hintShimmer * 2f - 0.5f) * tw;
-                    hintPaint.setShader(new LinearGradient(hx + shift, hy, hx + shift + tw, hy,
-                            new int[]{0xFF7B5CFF, 0xFF387AFF, 0xFF18B8D8, 0xFF7B5CFF},
-                            new float[]{0f, 0.38f, 0.72f, 1f}, Shader.TileMode.MIRROR));
-                    hintPaint.setAlpha((int) (225 * closeA));
-                    c.drawText(visible, hx, hy, hintPaint);
                     hintPaint.setShader(null);
+                    hintPaint.setColor(Ui.alpha(Ui.text2(), closeA));
+                    c.drawText(searchHintText, hx, hy, hintPaint);
                 }
             }
         }

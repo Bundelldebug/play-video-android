@@ -35,20 +35,23 @@ import java.util.Locale;
  * in-app updater, and AI subtitle generation.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.12";
+    static final String VERSION = "9.5.13";
 
     private static final int REQ_PERM = 1001;
     private static final int REQ_PICK_VIDEO = 1002;
     private static final int REQ_PICK_SUB = 1003;
     private static final int REQ_PICK_SUB2 = 1004;
     static final int REQ_PICK_ACCOUNT = 1005;
+    static final int REQ_AUTH_CONSENT = 1006;
 
     FrameLayout root;
     Glass.Backdrop backdrop;
     private FrameLayout pageHost;
     Header header;
     Dock dock;
+    YouTubeHub.YtModePill ytPill;
     VideoOverlay playerOverlay;
+    private int lastRootW, lastRootH;
 
     private final NavStack[] tabs = new NavStack[4];
     private int tab;
@@ -107,7 +110,21 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         header = new Header(this, backdrop);
         header.setListener(this);
         root.addView(header, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, headerHeight()));
-        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> fitHeader());
+        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            int nw = r - l, nh = b - t;
+            if (nw > 0 && nh > 0 && (nw != lastRootW || nh != lastRootH)) {
+                lastRootW = nw;
+                lastRootH = nh;
+                Ui.screenW = nw;
+                Ui.screenH = nh;
+                relayoutForSizeChange();
+            } else {
+                fitHeader();
+            }
+        });
+
+        ytPill = new YouTubeHub.YtModePill(this, backdrop);
+        root.addView(ytPill, match());
 
         dock = new Dock(this, backdrop, new String[]{
                 getString(R.string.tab_home),
@@ -160,6 +177,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
                 updateScrollChrome(currentPage());
                 boolean dirty = backdrop.isDirty();
                 if (dirty || header.animating()) header.invalidate();
+                if (ytPill != null && ytPill.getVisibility() == View.VISIBLE && (dirty || ytPill.animating())) ytPill.invalidate();
                 if (dock.getVisibility() == View.VISIBLE && (dirty || dock.animating())) dock.invalidate();
                 for (int i = 0; i < root.getChildCount(); i++) {
                     View c = root.getChildAt(i);
@@ -169,7 +187,12 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             }
         });
 
-        tabs[0] = new NavStack(new Pages.HomePage(this));
+        YouTubeHub.HomeYouTubePage homePage = new YouTubeHub.HomeYouTubePage(this);
+        ytPill.setListener(mode -> {
+            homePage.setMode(mode);
+            syncHeader();
+        });
+        tabs[0] = new NavStack(homePage);
         tabs[1] = new NavStack(new Pages.FoldersPage(this));
         tabs[2] = new NavStack(new Pages.LibraryPage(this));
         tabs[3] = new NavStack(new Settings.SettingsPage(this));
@@ -180,6 +203,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         tabs[tab].top().show();
         dock.select(tab, false);
         syncHeader();
+        syncYtPillVisibility();
         setLightStatus(!Ui.dark);
 
         if (VideoLibrary.hasPermission(this)) {
@@ -227,23 +251,35 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     @Override public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         Ui.init(this, prefs(this));
+        lastRootW = 0;
+        lastRootH = 0;
+        relayoutForSizeChange();
         root.post(() -> {
             if (isFinishing() || isDestroyed()) return;
-            fitHeader();
-            dock.requestLayout();
+            Ui.init(this, prefs(this));
+            relayoutForSizeChange();
             for (NavStack s : tabs) if (s != null) { s.applyInsets(); s.rebuildAll(); }
             if (searchPage != null) { searchPage.applyInsets(); searchPage.rebuild(); }
-            if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
-            else if (!tabletUi() && sidebar != null) {
-                applySidebar(0f, Sidebar.widthFor(Ui.screenW));
-                root.removeView(sidebar);
-                sidebar = null;
-            }
-            if (playerOverlay.isOpen()) {
-                playerOverlay.onInsetsChanged();
-                playerOverlay.applyVideoTransform();
-            }
         });
+    }
+
+    private void relayoutForSizeChange() {
+        fitHeader();
+        if (dock != null) { dock.requestLayout(); dock.invalidate(); }
+        if (ytPill != null) { ytPill.requestLayout(); ytPill.invalidate(); }
+        if (header != null) { header.requestLayout(); header.invalidate(); }
+        for (NavStack s : tabs) if (s != null) s.applyInsets();
+        if (searchPage != null) searchPage.applyInsets();
+        if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
+        else if (!tabletUi() && sidebar != null) {
+            applySidebar(0f, Sidebar.widthFor(layoutW()));
+            root.removeView(sidebar);
+            sidebar = null;
+        }
+        if (playerOverlay != null && playerOverlay.isOpen()) {
+            playerOverlay.onInsetsChanged();
+            playerOverlay.applyVideoTransform();
+        }
     }
 
     @Override protected void onUserLeaveHint() {
@@ -298,28 +334,42 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     }
 
     // ---- Responsive layout helpers ----
-    boolean tabletUi() {
-        int W = root != null && root.getWidth() > 0 ? root.getWidth() : Ui.screenW;
-        int H = root != null && root.getHeight() > 0 ? root.getHeight() : Ui.screenH;
-        return Dock.tabletFor(W, H);
+    int layoutW() {
+        if (root != null && root.getWidth() > 0 && Math.abs(root.getWidth() - Ui.screenW) <= Ui.dp(24)) {
+            return root.getWidth();
+        }
+        return Ui.screenW > 0 ? Ui.screenW : (root != null ? root.getWidth() : 1080);
     }
 
-    int sideInset() {
-        int W = root != null && root.getWidth() > 0 ? root.getWidth() : Ui.screenW;
-        int H = root != null && root.getHeight() > 0 ? root.getHeight() : Ui.screenH;
-        return Dock.railFor(W, H) ? Ui.dp(92) : 0;
+    int layoutH() {
+        if (root != null && root.getHeight() > 0 && Math.abs(root.getHeight() - Ui.screenH) <= Ui.dp(24)) {
+            return root.getHeight();
+        }
+        return Ui.screenH > 0 ? Ui.screenH : (root != null ? root.getHeight() : 2400);
     }
 
-    int contentInsetPx() { return sidebar != null ? Math.round(Sidebar.widthFor(Ui.screenW) * sidebarP) : 0; }
+    boolean tabletUi() { return Dock.tabletFor(layoutW(), layoutH()); }
+    boolean railUi() { return Dock.railFor(layoutW(), layoutH()); }
+
+    int sideInset() { return railUi() ? Ui.dp(92) : 0; }
+
+    int contentInsetPx() { return sidebar != null ? Math.round(Sidebar.widthFor(layoutW()) * sidebarP) : 0; }
 
     int bottomPadding() {
+        if (tab == 0 && (railUi() || tabletUi())) return Ui.navInset + Ui.dp(132);
         return Ui.navInset + Ui.dp(tabletUi() ? 92 : 148);
     }
 
     private int headerHeight() {
-        int W = root != null && root.getWidth() > 0 ? root.getWidth() : Ui.screenW;
-        int H = root != null && root.getHeight() > 0 ? root.getHeight() : Ui.screenH;
-        return Ui.statusInset + Ui.dp(Dock.railFor(W, H) ? 172 : 88);
+        return Ui.statusInset + Ui.dp(railUi() ? 172 : 88);
+    }
+
+    void syncYtPillVisibility() {
+        if (ytPill == null) return;
+        boolean searchOpen = searchPage != null && searchPage.getVisibility() == View.VISIBLE;
+        boolean show = tab == 0 && tabs[0] != null && !tabs[0].canPop() && !searchOpen;
+        ytPill.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show) ytPill.invalidate();
     }
 
     private void fitHeader() {
@@ -390,7 +440,12 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             case "favorites": push(new Pages.VideoListPage(this, getString(R.string.favorites), "favorites")); break;
             case "playlists": push(new Pages.PlaylistsPage(this)); break;
             case "streams": push(new Pages.VideoListPage(this, getString(R.string.network_streams), "streams")); break;
-            case "youtube": push(new YouTubeHub.YouTubePage(this)); break;
+            case "youtube":
+                dock.select(0, true);
+                onTab(0, false);
+                if (tabs[0].canPop()) tabs[0].popToRoot();
+                syncHeader();
+                break;
             case "ai_subs": push(new Pages.AiSubtitlesPage(this)); break;
         }
     }
@@ -405,6 +460,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     void invalidateChrome() {
         if (header != null) header.invalidate();
+        if (ytPill != null) { ytPill.requestLayout(); ytPill.invalidate(); }
         if (dock != null) { dock.requestLayout(); dock.invalidate(); }
         if (sidebar != null) sidebar.invalidate();
     }
@@ -433,6 +489,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         Page p = currentPage();
         header.configure(p.title, p.headerIcons, p.back);
         updateScrollChrome(p);
+        syncYtPillVisibility();
     }
 
     void onPageScroll(Page p, int y, int dy) {
@@ -540,7 +597,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             syncHeader();
         } else if (icon == Icons.SETTINGS) {
             Page cur = currentPage();
-            if (cur instanceof YouTubeHub.YouTubePage) {
+            if (cur instanceof YouTubeHub.HomeYouTubePage || cur instanceof YouTubeHub.YouTubePage) {
                 YouTubeHub.showSourceSettingsSheet(this);
                 return;
             }
@@ -601,6 +658,10 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         super.onActivityResult(req, res, data);
         if (req == REQ_PICK_ACCOUNT) {
             YouTubeHub.handleAccountPickerResult(this, res == RESULT_OK ? data : null);
+            return;
+        }
+        if (req == REQ_AUTH_CONSENT) {
+            YouTubeHub.handleAuthConsentResult(this, res == RESULT_OK);
             return;
         }
         if (res != RESULT_OK || data == null || data.getData() == null) return;

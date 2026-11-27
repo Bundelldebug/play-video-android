@@ -123,7 +123,10 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.12", MainActivity.VERSION);
+        assertEquals("9.5.13", MainActivity.VERSION);
+        assertTrue(YouTubeHub.YtModePill.isVerticalFor(1236, 2745));
+        assertFalse(YouTubeHub.YtModePill.isVerticalFor(2160, 2280));
+        assertEquals(0, act.sideInset());
         assertNotNull(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com"));
         assertTrue(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com").startsWith("SAPISIDHASH "));
         assertEquals("Interstellar 2014", OnlineSubtitle.cleanQuery("[Sub] Interstellar.2014.2160p.4K.UHD.BluRay.x265.mkv"));
@@ -199,7 +202,14 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertTrue(Dock.railFor(2160, 2280));
+        assertFalse(YouTubeHub.YtModePill.isVerticalFor(2160, 2280));
         saveShot(act.root, 2160, 2280, "foldable-dark-gstyle.png");
+
+        // Regression test: unfolding -> folding to cover screen MUST clear right-side safe-area inset immediately!
+        Ui.screenW = 1080;
+        Ui.screenH = 2400;
+        assertEquals(0, act.sideInset());
+        assertFalse(act.railUi());
     }
 
     @Test @Config(qualifiers = "ko-rKR-w1100dp-h720dp-xhdpi")
