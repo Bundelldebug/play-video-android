@@ -27,7 +27,8 @@ final class Icons {
             BUDS = 58, BUDS2 = 59, BUDS4 = 60, BUDS_LIVE = 61, BUDS_ON = 62,
             CHEVRON_UP = 63, YOUTUBE = 64, PROSCALER = 65,
             THUMB_UP = 66, THUMB_UP_FILL = 67, SUBSCRIPTIONS = 68, CHANNEL = 69,
-            COMMENT = 70, SHARE = 71, FULLSCREEN = 72, FULLSCREEN_EXIT = 73;
+            COMMENT = 70, SHARE = 71, FULLSCREEN = 72, FULLSCREEN_EXIT = 73,
+            THUMB_DOWN = 74;
 
     private static final Paint P = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final CornerPathEffect ROUND1 = new CornerPathEffect(1.3f);
@@ -551,6 +552,12 @@ final class Icons {
                 p.moveTo(19.5f, 14.8f); p.lineTo(14.8f, 14.8f); p.lineTo(14.8f, 19.5f);
                 p.moveTo(4.5f, 14.8f); p.lineTo(9.2f, 14.8f); p.lineTo(9.2f, 19.5f);
                 c.drawPath(p, P);
+                break;
+            case THUMB_DOWN:
+                c.save();
+                c.rotate(180f, 12f, 12f);
+                render(c, THUMB_UP);
+                c.restore();
                 break;
         }
     }

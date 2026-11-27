@@ -123,12 +123,58 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.13", MainActivity.VERSION);
+        assertEquals("9.5.14", MainActivity.VERSION);
         assertTrue(YouTubeHub.YtModePill.isVerticalFor(1236, 2745));
         assertFalse(YouTubeHub.YtModePill.isVerticalFor(2160, 2280));
         assertEquals(0, act.sideInset());
-        assertNotNull(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com"));
-        assertTrue(YouTubeHub.buildSapisidHash("SAPISID=test_token_123", "https://www.youtube.com").startsWith("SAPISIDHASH "));
+        String sapisid = YouTubeHub.buildSapisidHash("SAPISID=test_token_123; __Secure-1PAPISID=p1_tok; __Secure-3PAPISID=p3_tok", "https://www.youtube.com");
+        assertNotNull(sapisid);
+        assertTrue(sapisid.contains("SAPISIDHASH "));
+        assertTrue(sapisid.contains("SAPISID1PHASH "));
+        assertTrue(sapisid.contains("SAPISID3PHASH "));
+
+        // Verify modern YouTube lockupViewModel, subscriptions, playlists, channel tabs, and comment replies parsing
+        org.json.JSONObject lockupResp = new org.json.JSONObject("{\"lockupViewModel\":{\"contentId\":\"dQw4w9WgXcQ\",\"contentType\":\"LOCKUP_CONTENT_TYPE_VIDEO\",\"metadata\":{\"lockupMetadataViewModel\":{\"title\":{\"content\":\"Rick Astley Official\"},\"metadata\":{\"contentMetadataViewModel\":{\"metadataRows\":[{\"metadataParts\":[{\"text\":{\"content\":\"Rick Astley\"}}]},{\"metadataParts\":[{\"text\":{\"content\":\"조회수 15억회\"}},{\"text\":{\"content\":\"14년 전\"}}]}]}}}}}}");
+        java.util.List<YouTubeHub.YtVideo> parsedLockup = new java.util.ArrayList<>();
+        YouTubeHub.collectRenderers(lockupResp, parsedLockup, new java.util.HashSet<>(), 10);
+        assertEquals(1, parsedLockup.size());
+        assertEquals("Rick Astley Official", parsedLockup.get(0).title);
+        assertEquals("Rick Astley", parsedLockup.get(0).author);
+
+        org.json.JSONObject cmResp = new org.json.JSONObject("{"
+                + "\"onResponseReceivedEndpoints\":[{\"reloadContinuationItemsCommand\":{\"continuationItems\":["
+                + "{\"commentsHeaderRenderer\":{\"countText\":{\"simpleText\":\"1.2천\"},\"sortMenu\":{\"sortFilterSubMenuRenderer\":{\"subMenuItems\":[{\"serviceEndpoint\":{\"continuationCommand\":{\"token\":\"TOK_TOP\"}}},{\"serviceEndpoint\":{\"continuationCommand\":{\"token\":\"TOK_NEW\"}}}]}}}},"
+                + "{\"commentThreadRenderer\":{\"commentViewModel\":{\"commentViewModel\":{\"commentId\":\"c1\",\"pinnedText\":\"고정됨\"}},\"replies\":{\"commentRepliesRenderer\":{\"contents\":[{\"continuationItemRenderer\":{\"continuationEndpoint\":{\"continuationCommand\":{\"token\":\"TOK_REPLIES_1\"}}}}]}}}},"
+                + "{\"continuationItemRenderer\":{\"continuationEndpoint\":{\"continuationCommand\":{\"token\":\"TOK_NEXT_PAGE\"}}}}"
+                + "]}}],"
+                + "\"frameworkUpdates\":{\"entityBatchUpdate\":{\"mutations\":[{\"payload\":{\"commentEntityPayload\":{\"properties\":{\"commentId\":\"c1\",\"content\":{\"content\":\"정말 좋은 영상!\"},\"publishedTime\":\"2시간 전\"},\"author\":{\"displayName\":\"@creator\",\"isCreator\":true,\"avatarThumbnailUrl\":\"https://example.com/av.jpg\"},\"toolbar\":{\"likeCountNotliked\":\"42\",\"replyCount\":\"3\",\"heartActiveTooltip\":\"크리에이터가 하트를 표시함\"}}}}]}}}");
+        java.util.List<YouTubeHub.YtComment> parsedCms = new java.util.ArrayList<>();
+        String[] nextTok = {""};
+        String[] sortToks = {"", ""};
+        YouTubeHub.WatchDetails wd = new YouTubeHub.WatchDetails();
+        YouTubeHub.parseCommentsResponse(cmResp, parsedCms, nextTok, sortToks, wd);
+        assertEquals(1, parsedCms.size());
+        assertEquals("@creator", parsedCms.get(0).author);
+        assertTrue(parsedCms.get(0).isOwner);
+        assertTrue(parsedCms.get(0).isPinned);
+        assertTrue(parsedCms.get(0).isHearted);
+        assertEquals("TOK_REPLIES_1", parsedCms.get(0).replyToken);
+        assertEquals("TOK_NEXT_PAGE", nextTok[0]);
+        assertEquals("TOK_TOP", sortToks[0]);
+        assertEquals("TOK_NEW", sortToks[1]);
+
+        org.json.JSONObject chResp = new org.json.JSONObject("{"
+                + "\"metadata\":{\"channelMetadataRenderer\":{\"title\":\"MKBHD\",\"description\":\"Quality Tech Videos\",\"vanityChannelUrl\":\"https://www.youtube.com/@mkbhd\"}},"
+                + "\"header\":{\"pageHeaderRenderer\":{\"content\":{\"pageHeaderViewModel\":{\"banner\":{\"imageBannerViewModel\":{\"image\":{\"sources\":[{\"url\":\"https://example.com/banner.jpg\"}]}}},\"metadata\":{\"contentMetadataViewModel\":{\"metadataRows\":[{\"metadataParts\":[{\"text\":{\"content\":\"@mkbhd\"}}]},{\"metadataParts\":[{\"text\":{\"content\":\"구독자 2000만명\"}},{\"text\":{\"content\":\"동영상 1.7천개\"}}]}]}}}}}}}");
+        YouTubeHub.ChannelInfo chInfo = new YouTubeHub.ChannelInfo();
+        chInfo.channelId = "UCBJycsmduvYEL83R_U4JriQ";
+        chInfo.activeTab = "videos";
+        YouTubeHub.parseChannelResponse(chResp, chInfo, new java.util.HashSet<>());
+        assertEquals("MKBHD", chInfo.name);
+        assertEquals("@mkbhd", chInfo.handle);
+        assertEquals("구독자 2000만명", chInfo.subscribers);
+        assertEquals("동영상 1.7천개", chInfo.videoCount);
+        assertEquals("https://example.com/banner.jpg", chInfo.bannerUrl);
         assertEquals("Interstellar 2014", OnlineSubtitle.cleanQuery("[Sub] Interstellar.2014.2160p.4K.UHD.BluRay.x265.mkv"));
         assertEquals(25, NpuAudio.SUPPORTED_CHIPS.length);
         assertNotNull(NpuAudio.displaySoc(act));
