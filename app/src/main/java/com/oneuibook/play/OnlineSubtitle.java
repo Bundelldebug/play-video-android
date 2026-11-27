@@ -268,8 +268,8 @@ final class OnlineSubtitle {
 
     static void searchWeb(Context c, String query, String lang, String movieHash, SearchCb cb) {
         SharedPreferences p = MainActivity.prefs(c);
-        String osKey = p.getString("opensubtitles_api_key", "").trim();
-        String subdlKey = p.getString("subdl_api_key", "").trim();
+        String osKey = SecureVault.get(c, p, "opensubtitles_api_key").trim();
+        String subdlKey = SecureVault.get(c, p, "subdl_api_key").trim();
 
         new Thread(() -> {
             List<Item> out = new ArrayList<>();
@@ -395,16 +395,24 @@ final class OnlineSubtitle {
         }, "play-sub-search").start();
     }
 
+    private static final int MAX_SUBTITLE_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_ZIP_ENTRIES = 64;
+
+    static boolean isSafeSubtitleUrl(String url) {
+        return url != null && url.startsWith("https://");
+    }
+
     private static void downloadAndApply(MainActivity m, VideoLibrary.Video video, Item it, boolean asSecondary, TextView status) {
         status.setText("'" + it.title + "' 자막을 내려받는 중…");
         SharedPreferences p = MainActivity.prefs(m);
-        String osKey = p.getString("opensubtitles_api_key", "").trim();
+        String osKey = SecureVault.get(m, p, "opensubtitles_api_key").trim();
 
         new Thread(() -> {
             try {
                 String dlUrl = it.downloadUrl;
                 if ((dlUrl == null || dlUrl.isEmpty()) && it.fileId != null && !it.fileId.isEmpty()) {
                     HttpURLConnection c = (HttpURLConnection) new URL("https://api.opensubtitles.com/api/v1/download").openConnection();
+                    c.setInstanceFollowRedirects(false);
                     c.setRequestMethod("POST");
                     c.setDoOutput(true);
                     c.setConnectTimeout(7000);
@@ -425,6 +433,7 @@ final class OnlineSubtitle {
                     }
                 }
                 if (dlUrl == null || dlUrl.isEmpty()) throw new Exception("다운로드 링크를 가져올 수 없습니다");
+                if (!isSafeSubtitleUrl(dlUrl)) throw new Exception("HTTPS 자막 링크만 허용됩니다");
 
                 HttpURLConnection conn = (HttpURLConnection) new URL(dlUrl).openConnection();
                 conn.setInstanceFollowRedirects(true);
@@ -468,9 +477,10 @@ final class OnlineSubtitle {
         }, "play-sub-dl").start();
     }
 
-    /** Automatically extracts .gz or .zip subtitle archives or returns plain subtitle bytes. */
+    /** Automatically extracts .gz or .zip subtitle archives or returns plain subtitle bytes (size-bounded). */
     static byte[] unpackSubtitleBytes(byte[] raw, String urlHint) throws Exception {
         if (raw == null || raw.length < 4) throw new Exception("빈 파일");
+        if (raw.length > MAX_SUBTITLE_BYTES) throw new Exception("자막 파일 크기가 제한(4MB)을 초과했습니다");
         // GZIP magic: 0x1F 0x8B
         if ((raw[0] & 0xFF) == 0x1F && (raw[1] & 0xFF) == 0x8B) {
             try (GZIPInputStream gis = new GZIPInputStream(new ByteArrayInputStream(raw))) {
@@ -481,7 +491,9 @@ final class OnlineSubtitle {
         if (raw[0] == 'P' && raw[1] == 'K') {
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(raw))) {
                 ZipEntry ze;
+                int entries = 0;
                 while ((ze = zis.getNextEntry()) != null) {
+                    if (++entries > MAX_ZIP_ENTRIES) throw new Exception("압축 파일 항목 수 제한 초과");
                     if (ze.isDirectory()) continue;
                     String n = ze.getName().toLowerCase(Locale.US);
                     if (n.endsWith(".srt") || n.endsWith(".ass") || n.endsWith(".ssa") || n.endsWith(".vtt") || n.endsWith(".smi")) {
@@ -496,8 +508,12 @@ final class OnlineSubtitle {
     private static byte[] readBytes(InputStream in) throws Exception {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        int n, total = 0;
+        while ((n = in.read(buf)) > 0) {
+            total += n;
+            if (total > MAX_SUBTITLE_BYTES) throw new Exception("자막 데이터 크기 제한(4MB) 초과");
+            bos.write(buf, 0, n);
+        }
         return bos.toByteArray();
     }
 

@@ -87,7 +87,7 @@ final class AiSubtitle {
         AtomicBoolean cancelled = new AtomicBoolean(false);
         SharedPreferences p = MainActivity.prefs(c);
         String engine = p.getString("ai_engine", ENGINE_GEMINI);
-        String apiKey = p.getString("ai_api_key", "").trim();
+        String apiKey = SecureVault.get(c, p, "ai_api_key").trim();
         String customUrl = p.getString("ai_custom_url", "").trim();
         String srcLang = p.getString("ai_src_lang", "auto");
         String dstLang = p.getString("ai_dst_lang", "ko");
@@ -127,7 +127,9 @@ final class AiSubtitle {
                     } else if (ENGINE_GROQ.equals(engine)) {
                         srt = callWhisper("https://api.groq.com/openai/v1/audio/transcriptions", apiKey, "whisper-large-v3-turbo", ch.wavBytes, srcLang);
                     } else {
-                        if (customUrl.isEmpty()) throw new IllegalStateException("사용자 지정 엔드포인트 URL을 입력하세요.");
+                        if (!isSafeCustomEndpoint(customUrl)) {
+                            throw new IllegalStateException("사용자 지정 서버는 HTTPS URL(또는 로컬호스트)만 허용됩니다.");
+                        }
                         srt = callWhisper(customUrl, apiKey, "whisper-1", ch.wavBytes, srcLang);
                     }
 
@@ -311,9 +313,26 @@ final class AiSubtitle {
         return out;
     }
 
+    /** Enforces HTTPS for remote custom AI endpoints (allowing plaintext HTTP only for localhost loopback). */
+    static boolean isSafeCustomEndpoint(String url) {
+        if (url == null || url.trim().isEmpty()) return false;
+        try {
+            Uri u = Uri.parse(url.trim());
+            String scheme = u.getScheme();
+            String host = u.getHost();
+            if (scheme == null || host == null || host.isEmpty()) return false;
+            String s = scheme.toLowerCase(Locale.ROOT);
+            String h = host.toLowerCase(Locale.ROOT);
+            if ("https".equals(s)) return true;
+            return "http".equals(s) && ("localhost".equals(h) || "127.0.0.1".equals(h) || "::1".equals(h));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     // ---- Gemini API ----
     private static String callGemini(String apiKey, byte[] wav, String srcLang, String dstLang) throws Exception {
-        String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+        String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
         String langInstruction = "auto".equals(dstLang)
                 ? "Transcribe the speech in its original language."
                 : "Transcribe and translate the speech into natural " + langName(dstLang) + ".";
@@ -333,11 +352,13 @@ final class AiSubtitle {
         body.put("contents", new JSONArray().put(new JSONObject().put("parts", parts)));
 
         HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(20_000);
         conn.setReadTimeout(180_000);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        conn.setRequestProperty("x-goog-api-key", apiKey);
         try (OutputStream os = conn.getOutputStream()) {
             os.write(body.toString().getBytes(StandardCharsets.UTF_8));
         }
@@ -358,6 +379,7 @@ final class AiSubtitle {
     private static String callWhisper(String url, String apiKey, String model, byte[] wav, String srcLang) throws Exception {
         String boundary = "----PlayAiSub" + System.currentTimeMillis();
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(20_000);
         conn.setReadTimeout(180_000);

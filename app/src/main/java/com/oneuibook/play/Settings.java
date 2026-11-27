@@ -705,25 +705,25 @@ final class Settings {
             content.addView(g, Widgets.MW);
 
             Widgets.Group webG = new Widgets.Group(m, m.getString(R.string.sub_web_search));
-            String osKey = p.getString("opensubtitles_api_key", "");
+            String osKey = SecureVault.get(m, p, "opensubtitles_api_key");
             webG.row(Icons.GLOBE, Ui.ACCENT, m.getString(R.string.opensubtitles_key), osKey.isEmpty() ? "미설정" : "설정됨", true, v -> {
                 LinearLayout form = new LinearLayout(m);
                 form.setOrientation(LinearLayout.VERTICAL);
                 EditText et = Widgets.formField(m, m.getString(R.string.opensubtitles_key), "OpenSubtitles REST API 키 (선택)", osKey,
-                        InputType.TYPE_CLASS_TEXT, form);
+                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, form);
                 Widgets.showFormSheet(m, m.getString(R.string.opensubtitles_key), form, m.getString(R.string.save), () -> {
-                    p.edit().putString("opensubtitles_api_key", et.getText().toString().trim()).apply();
+                    SecureVault.put(m, p, "opensubtitles_api_key", et.getText().toString().trim());
                     rebuild();
                 });
             });
-            String sdKey = p.getString("subdl_api_key", "");
+            String sdKey = SecureVault.get(m, p, "subdl_api_key");
             webG.row(Icons.SEARCH, Ui.ACCENT, m.getString(R.string.subdl_key), sdKey.isEmpty() ? "미설정" : "설정됨", true, v -> {
                 LinearLayout form = new LinearLayout(m);
                 form.setOrientation(LinearLayout.VERTICAL);
                 EditText et = Widgets.formField(m, m.getString(R.string.subdl_key), "Subdl API 키 (선택)", sdKey,
-                        InputType.TYPE_CLASS_TEXT, form);
+                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, form);
                 Widgets.showFormSheet(m, m.getString(R.string.subdl_key), form, m.getString(R.string.save), () -> {
-                    p.edit().putString("subdl_api_key", et.getText().toString().trim()).apply();
+                    SecureVault.put(m, p, "subdl_api_key", et.getText().toString().trim());
                     rebuild();
                 });
             });
@@ -757,7 +757,7 @@ final class Settings {
                 });
             });
 
-            String key = p.getString("ai_api_key", "");
+            String key = SecureVault.get(m, p, "ai_api_key");
             String masked = key.isEmpty() ? "미설정" : ("••••••••" + (key.length() > 4 ? key.substring(key.length() - 4) : ""));
             g.row(Icons.LOCK, Ui.ACCENT, m.getString(R.string.ai_api_key), masked, true, v -> {
                 LinearLayout form = new LinearLayout(m);
@@ -765,7 +765,7 @@ final class Settings {
                 EditText et = Widgets.formField(m, m.getString(R.string.ai_api_key), m.getString(R.string.ai_api_key_hint),
                         key, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, form);
                 Widgets.showFormSheet(m, m.getString(R.string.ai_api_key), form, m.getString(R.string.save), () -> {
-                    p.edit().putString("ai_api_key", et.getText().toString().trim()).apply();
+                    SecureVault.put(m, p, "ai_api_key", et.getText().toString().trim());
                     rebuild();
                 });
             });
@@ -776,10 +776,15 @@ final class Settings {
                     LinearLayout form = new LinearLayout(m);
                     form.setOrientation(LinearLayout.VERTICAL);
                     EditText et = Widgets.formField(m, m.getString(R.string.ai_custom_url),
-                            "http://192.168.0.10:8000/v1/audio/transcriptions", url,
+                            "https://whisper.example.com/v1/audio/transcriptions", url,
                             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, form);
                     Widgets.showFormSheet(m, m.getString(R.string.ai_custom_url), form, m.getString(R.string.save), () -> {
-                        p.edit().putString("ai_custom_url", et.getText().toString().trim()).apply();
+                        String u = et.getText().toString().trim();
+                        if (!u.isEmpty() && !AiSubtitle.isSafeCustomEndpoint(u)) {
+                            Toast.makeText(m, "HTTPS URL(또는 로컬호스트)만 사용할 수 있습니다.", Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        p.edit().putString("ai_custom_url", u).apply();
                         rebuild();
                     });
                 });

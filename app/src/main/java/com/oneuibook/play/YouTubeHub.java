@@ -334,10 +334,9 @@ final class YouTubeHub {
             CookieManager cm = CookieManager.getInstance();
             String existing = cm != null ? cm.getCookie("https://www.youtube.com") : null;
             if (existing != null && (existing.contains("SAPISID=") || existing.contains("__Secure-3PAPISID="))) {
-                MainActivity.prefs(m).edit()
-                        .putString(PREF_GOOGLE_COOKIE, existing.trim())
-                        .putString(PREF_GOOGLE_ACCOUNT, accName)
-                        .apply();
+                SharedPreferences sp = MainActivity.prefs(m);
+                SecureVault.put(m, sp, PREF_GOOGLE_COOKIE, existing.trim());
+                sp.edit().putString(PREF_GOOGLE_ACCOUNT, accName).apply();
                 Runnable cb = pendingAccountCallback;
                 pendingAccountCallback = null;
                 Toast.makeText(m, accName + " · microG 계정 연결 완료", Toast.LENGTH_SHORT).show();
@@ -404,10 +403,9 @@ final class YouTubeHub {
                                 MAIN.post(() -> exchangeMergeSessionSilent(m, accName, tok));
                                 return;
                             }
-                            MainActivity.prefs(m).edit()
-                                    .putString(PREF_GOOGLE_OAUTH, tok)
-                                    .putString(PREF_GOOGLE_ACCOUNT, accName)
-                                    .apply();
+                            SharedPreferences sp = MainActivity.prefs(m);
+                            SecureVault.put(m, sp, PREF_GOOGLE_OAUTH, tok);
+                            sp.edit().putString(PREF_GOOGLE_ACCOUNT, accName).apply();
                             Runnable cb = pendingAccountCallback;
                             pendingAccountCallback = null;
                             pendingAuthAccount = null;
@@ -428,11 +426,46 @@ final class YouTubeHub {
         }
     }
 
+    static void hardenWebSettings(WebSettings ws) {
+        ws.setAllowFileAccess(false);
+        ws.setAllowContentAccess(false);
+        ws.setAllowFileAccessFromFileURLs(false);
+        ws.setAllowUniversalAccessFromFileURLs(false);
+        ws.setSaveFormData(false);
+        ws.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+    }
+
+    static boolean isTrustedGoogleOrYouTubeUrl(String url) {
+        if (url == null || !url.startsWith("https://")) return false;
+        try {
+            Uri u = Uri.parse(url);
+            String host = u.getHost();
+            if (host == null) return false;
+            String h = host.toLowerCase(Locale.ROOT);
+            return "youtube.com".equals(h) || h.endsWith(".youtube.com")
+                    || "youtu.be".equals(h)
+                    || "google.com".equals(h) || h.endsWith(".google.com")
+                    || "gstatic.com".equals(h) || h.endsWith(".gstatic.com")
+                    || "googleapis.com".equals(h) || h.endsWith(".googleapis.com")
+                    || "googlevideo.com".equals(h) || h.endsWith(".googlevideo.com")
+                    || "ytimg.com".equals(h) || h.endsWith(".ytimg.com")
+                    || "youtube-nocookie.com".equals(h) || h.endsWith(".youtube-nocookie.com");
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /** Silently exchanges a Google/microG MergeSession URL for real YouTube cookies without showing any login UI. */
     private static void exchangeMergeSessionSilent(MainActivity m, String accName, String mergeUrl) {
+        if (!isTrustedGoogleOrYouTubeUrl(mergeUrl)) {
+            pendingAuthScopeIdx++;
+            requestNextAuthToken(m);
+            return;
+        }
         try {
             WebView wv = new WebView(m);
             WebSettings ws = wv.getSettings();
+            hardenWebSettings(ws);
             ws.setJavaScriptEnabled(true);
             ws.setDomStorageEnabled(true);
             ws.setUserAgentString(WEB_UA);
@@ -448,6 +481,10 @@ final class YouTubeHub {
                 try { wv.stopLoading(); m.root.removeView(wv); wv.destroy(); } catch (Throwable ignored) {}
             };
             wv.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                    String u = req != null && req.getUrl() != null ? req.getUrl().toString() : null;
+                    return !isTrustedGoogleOrYouTubeUrl(u);
+                }
                 @Override public void onPageFinished(WebView view, String url) {
                     if (finished[0]) return;
                     cm.flush();
@@ -456,10 +493,9 @@ final class YouTubeHub {
                     String merged = (ckYt != null ? ckYt : "") + (ckMob != null && !ckMob.equals(ckYt) ? "; " + ckMob : "");
                     if (merged.contains("SAPISID=") || merged.contains("__Secure-3PAPISID=") || merged.contains("SID=")) {
                         cleanup.run();
-                        MainActivity.prefs(m).edit()
-                                .putString(PREF_GOOGLE_COOKIE, merged.trim())
-                                .putString(PREF_GOOGLE_ACCOUNT, accName)
-                                .apply();
+                        SharedPreferences sp = MainActivity.prefs(m);
+                        SecureVault.put(m, sp, PREF_GOOGLE_COOKIE, merged.trim());
+                        sp.edit().putString(PREF_GOOGLE_ACCOUNT, accName).apply();
                         Runnable cb = pendingAccountCallback;
                         pendingAccountCallback = null;
                         pendingAuthAccount = null;
@@ -483,11 +519,12 @@ final class YouTubeHub {
     }
 
     static String getGoogleOAuthToken(Context c) {
-        return MainActivity.prefs(c).getString(PREF_GOOGLE_OAUTH, "").trim();
+        return SecureVault.get(c, MainActivity.prefs(c), PREF_GOOGLE_OAUTH).trim();
     }
 
     static String getGoogleCookie(Context c) {
-        String saved = MainActivity.prefs(c).getString(PREF_GOOGLE_COOKIE, "").trim();
+        SharedPreferences sp = MainActivity.prefs(c);
+        String saved = SecureVault.get(c, sp, PREF_GOOGLE_COOKIE).trim();
         try {
             CookieManager cm = CookieManager.getInstance();
             if (cm != null) {
@@ -496,7 +533,7 @@ final class YouTubeHub {
                 String merged = mergeCookieStrings(saved, mergeCookieStrings(liveM, liveW));
                 if (!merged.isEmpty()) {
                     if (!merged.equals(saved) && (merged.contains("SAPISID=") || merged.contains("__Secure-3PAPISID="))) {
-                        MainActivity.prefs(c).edit().putString(PREF_GOOGLE_COOKIE, merged).apply();
+                        SecureVault.put(c, sp, PREF_GOOGLE_COOKIE, merged);
                     }
                     return merged;
                 }
@@ -627,6 +664,7 @@ final class YouTubeHub {
 
         WebView wv = new WebView(m);
         WebSettings ws = wv.getSettings();
+        hardenWebSettings(ws);
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
         ws.setDatabaseEnabled(true);
@@ -645,10 +683,9 @@ final class YouTubeHub {
                 if (merged.contains("SAPISID=") || merged.contains("__Secure-3PAPISID=") || merged.contains("SID=")) {
                     String label = (prefillEmail != null && !prefillEmail.isEmpty()) ? prefillEmail
                             : (!devAccs.isEmpty() ? devAccs.get(0) : m.getString(R.string.yt_google_signed_in));
-                    MainActivity.prefs(m).edit()
-                            .putString(PREF_GOOGLE_COOKIE, merged.trim())
-                            .putString(PREF_GOOGLE_ACCOUNT, label)
-                            .apply();
+                    SharedPreferences sp = MainActivity.prefs(m);
+                    SecureVault.put(m, sp, PREF_GOOGLE_COOKIE, merged.trim());
+                    sp.edit().putString(PREF_GOOGLE_ACCOUNT, label).apply();
                     Toast.makeText(m, m.getString(R.string.yt_google_signed_in), Toast.LENGTH_SHORT).show();
                     if (dlgRef[0] != null && dlgRef[0].isShowing()) dlgRef[0].dismiss();
                     if (onDone != null) onDone.run();
@@ -657,6 +694,10 @@ final class YouTubeHub {
         };
 
         wv.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                String u = req != null && req.getUrl() != null ? req.getUrl().toString() : null;
+                return !isTrustedGoogleOrYouTubeUrl(u);
+            }
             @Override public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 if (url != null && (url.contains("youtube.com") && !url.contains("accounts.google.com"))) {
@@ -1654,7 +1695,7 @@ final class YouTubeHub {
         String[] queries = {"", "인기 뮤직비디오 2026", "게임 최신 트레일러", "실시간 스트리밍 인기", "오늘 인기 동영상", "영화 공식 예고편", "최신 스마트폰 테크 리뷰"};
         String filter = categoryIdx >= 0 && categoryIdx < cats.length ? cats[categoryIdx] : "all";
         String pipedBase = MainActivity.prefs(c).getString(PREF_PIPED_URL, DEFAULT_PIPED).trim();
-        String apiKey = MainActivity.prefs(c).getString(PREF_API_KEY, "").trim();
+        String apiKey = SecureVault.get(c, MainActivity.prefs(c), PREF_API_KEY).trim();
 
         EXEC.execute(() -> {
             List<YtVideo> out = new ArrayList<>();
@@ -1762,7 +1803,7 @@ final class YouTubeHub {
         final String q = query.trim();
         final String directId = extractVideoId(q);
         final String pipedBase = MainActivity.prefs(c).getString(PREF_PIPED_URL, DEFAULT_PIPED).trim();
-        final String apiKey = MainActivity.prefs(c).getString(PREF_API_KEY, "").trim();
+        final String apiKey = SecureVault.get(c, MainActivity.prefs(c), PREF_API_KEY).trim();
 
         EXEC.execute(() -> {
             List<YtVideo> out = new ArrayList<>();
@@ -2666,7 +2707,7 @@ final class YouTubeHub {
     /** Loads rich watch metadata, full InnerTube comments (with sort/replies/pagination tokens), and Up Next videos! */
     static void loadWatchDetails(Context c, YtVideo v, WatchCb cb) {
         final String pipedBase = MainActivity.prefs(c).getString(PREF_PIPED_URL, DEFAULT_PIPED).trim();
-        final String apiKey = MainActivity.prefs(c).getString(PREF_API_KEY, "").trim();
+        final String apiKey = SecureVault.get(c, MainActivity.prefs(c), PREF_API_KEY).trim();
         EXEC.execute(() -> {
             WatchDetails d = new WatchDetails();
             d.channelId = v.channelId == null ? "" : v.channelId;
@@ -4568,20 +4609,23 @@ final class YouTubeHub {
         form.addView(btnRow, brlp);
 
         String curPiped = MainActivity.prefs(m).getString(PREF_PIPED_URL, DEFAULT_PIPED);
-        String curKey = MainActivity.prefs(m).getString(PREF_API_KEY, "");
+        String curKey = SecureVault.get(m, MainActivity.prefs(m), PREF_API_KEY);
         EditText pipedEt = Widgets.formField(m, m.getString(R.string.yt_piped_instance), DEFAULT_PIPED, curPiped,
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI, form);
         EditText keyEt = Widgets.formField(m, m.getString(R.string.yt_api_key_label), m.getString(R.string.yt_api_key_hint), curKey,
-                InputType.TYPE_CLASS_TEXT, form);
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD, form);
         EditText chanEt = Widgets.formField(m, m.getString(R.string.yt_add_channel), "UC... (채널 ID)", "",
                 InputType.TYPE_CLASS_TEXT, form);
         Widgets.showFormSheet(m, m.getString(R.string.yt_source_settings), form, m.getString(R.string.save), () -> {
             String pu = pipedEt.getText().toString().trim();
             if (pu.isEmpty()) pu = DEFAULT_PIPED;
-            MainActivity.prefs(m).edit()
-                    .putString(PREF_PIPED_URL, pu)
-                    .putString(PREF_API_KEY, keyEt.getText().toString().trim())
-                    .apply();
+            if (!pu.startsWith("https://")) {
+                Toast.makeText(m, "Piped 인스턴스는 HTTPS 주소만 허용됩니다.", Toast.LENGTH_SHORT).show();
+                pu = DEFAULT_PIPED;
+            }
+            SharedPreferences sp = MainActivity.prefs(m);
+            sp.edit().putString(PREF_PIPED_URL, pu).apply();
+            SecureVault.put(m, sp, PREF_API_KEY, keyEt.getText().toString().trim());
             String ch = chanEt.getText().toString().trim();
             if (!ch.isEmpty()) addChannelSubscription(m, ch, ch);
             m.reloadAll();
@@ -4839,6 +4883,7 @@ final class YouTubeHub {
             webFallback.setBackgroundColor(Color.BLACK);
             webFallback.setVisibility(GONE);
             WebSettings ws = webFallback.getSettings();
+            hardenWebSettings(ws);
             ws.setJavaScriptEnabled(true);
             ws.setDomStorageEnabled(true);
             ws.setMediaPlaybackRequiresUserGesture(false);
@@ -4848,7 +4893,10 @@ final class YouTubeHub {
             cm.setAcceptThirdPartyCookies(webFallback, true);
             webFallback.setWebChromeClient(new WebChromeClient());
             webFallback.setWebViewClient(new WebViewClient() {
-                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) { return false; }
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                    String u = req != null && req.getUrl() != null ? req.getUrl().toString() : null;
+                    return !isTrustedGoogleOrYouTubeUrl(u);
+                }
             });
             videoStage.addView(webFallback, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 

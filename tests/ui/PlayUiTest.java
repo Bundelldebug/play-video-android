@@ -123,7 +123,7 @@ public class PlayUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("플레이", act.getString(R.string.app_name));
-        assertEquals("9.5.14", MainActivity.VERSION);
+        assertEquals("9.5.15", MainActivity.VERSION);
         assertTrue(YouTubeHub.YtModePill.isVerticalFor(1236, 2745));
         assertFalse(YouTubeHub.YtModePill.isVerticalFor(2160, 2280));
         assertEquals(0, act.sideInset());
@@ -267,5 +267,46 @@ public class PlayUiTest {
         assertTrue(act.tabletUi());
         act.openSidebar(false);
         saveShot(act.root, 2200, 1440, "tablet-sidebar.png");
+    }
+
+    @Test public void securityHardeningChecks() throws Exception {
+        Context ctx = RuntimeEnvironment.getApplication();
+        android.content.SharedPreferences sp = MainActivity.prefs(ctx);
+
+        // 1. SecureVault AES-GCM encrypt/decrypt and transparent migration from legacy plaintext
+        sp.edit().putString("legacy_secret", "SAPISID=my_secret_cookie_value").apply();
+        assertEquals("SAPISID=my_secret_cookie_value", SecureVault.get(ctx, sp, "legacy_secret"));
+        String stored = sp.getString("legacy_secret", "");
+        assertTrue(SecureVault.isEncryptedValue(stored));
+        assertFalse(stored.contains("my_secret_cookie_value"));
+
+        SecureVault.put(ctx, sp, "new_secret", "AIzaSyTestKey12345");
+        assertTrue(SecureVault.isEncryptedValue(sp.getString("new_secret", "")));
+        assertEquals("AIzaSyTestKey12345", SecureVault.get(ctx, sp, "new_secret"));
+
+        // 2. Trusted GitHub Releases URL enforcement
+        assertTrue(Updater.isTrustedReleaseUrl("https://github.com/Bundelldebug/play-video-android/releases/download/v9.5.15/PlayVideo_Android.apk"));
+        assertTrue(Updater.isTrustedReleaseUrl("https://objects.githubusercontent.com/github-production-release-asset-1/Play.apk"));
+        assertFalse(Updater.isTrustedReleaseUrl("http://github.com/Bundelldebug/play-video-android/releases/download/v9.5.15/Play.apk"));
+        assertFalse(Updater.isTrustedReleaseUrl("https://evil.example.com/Play.apk"));
+
+        // 3. AI custom endpoint HTTPS enforcement (allowing localhost only for HTTP)
+        assertTrue(AiSubtitle.isSafeCustomEndpoint("https://whisper.example.com/v1/audio/transcriptions"));
+        assertTrue(AiSubtitle.isSafeCustomEndpoint("http://127.0.0.1:8000/v1/audio/transcriptions"));
+        assertTrue(AiSubtitle.isSafeCustomEndpoint("http://localhost:8000/v1/audio/transcriptions"));
+        assertFalse(AiSubtitle.isSafeCustomEndpoint("http://192.168.0.10:8000/v1/audio/transcriptions"));
+        assertFalse(AiSubtitle.isSafeCustomEndpoint("file:///etc/passwd"));
+
+        // 4. OnlineSubtitle HTTPS & ZIP-bomb protection
+        assertTrue(OnlineSubtitle.isSafeSubtitleUrl("https://dl.subdl.com/subtitle/123.zip"));
+        assertFalse(OnlineSubtitle.isSafeSubtitleUrl("http://dl.subdl.com/subtitle/123.zip"));
+        assertFalse(OnlineSubtitle.isSafeSubtitleUrl("file:///data/data/com.oneuibook.play/shared_prefs/play_video.xml"));
+
+        // 5. YouTube WebView trusted origin allowlist
+        assertTrue(YouTubeHub.isTrustedGoogleOrYouTubeUrl("https://accounts.google.com/ServiceLogin"));
+        assertTrue(YouTubeHub.isTrustedGoogleOrYouTubeUrl("https://m.youtube.com/watch?v=dQw4w9WgXcQ"));
+        assertFalse(YouTubeHub.isTrustedGoogleOrYouTubeUrl("http://m.youtube.com/watch?v=dQw4w9WgXcQ"));
+        assertFalse(YouTubeHub.isTrustedGoogleOrYouTubeUrl("file:///android_asset/index.html"));
+        assertFalse(YouTubeHub.isTrustedGoogleOrYouTubeUrl("https://evil.example.com/phish"));
     }
 }
